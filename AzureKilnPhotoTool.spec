@@ -2,7 +2,6 @@
 import os
 from pathlib import Path
 
-from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import collect_all
 
 
@@ -29,7 +28,10 @@ if exiftool_dir.exists():
     if exiftool_exe.exists():
         datas.append((str(exiftool_exe), "."))
     if exiftool_files.exists():
-        datas += Tree(str(exiftool_files), prefix="exiftool_files")
+        for path in exiftool_files.rglob("*"):
+            if path.is_file():
+                target_dir = Path("exiftool_files") / path.relative_to(exiftool_files).parent
+                datas.append((str(path), str(target_dir)))
 
 
 a = Analysis(
