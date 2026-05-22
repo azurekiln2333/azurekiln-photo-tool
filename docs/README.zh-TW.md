@@ -1,132 +1,172 @@
-# 華為LivePhoto批量分離工具
+# AzureKiln Photo Tool
 
 [简体中文](../README.md) | 繁體中文 | [English](README.en.md)
 
-該專案用於將華為相機拍攝或由系統合併得到的 LivePhoto 單個 JPG 檔案批量分離為靜態照片與動態影片檔案。分離後的 `JPG + MP4` 可用於後續重新合成為 Motion Photo 標準格式，以便在 Windows Photos、Google Photos 等相簿應用中正常播放動態照片。
+AzureKiln Photo Tool 是面向 Windows 的動態照片處理工具集。現在已將三個核心流程整合到同一個 PyQt6 / Fluent 風格 GUI，並使用 Windows 風格左側邊欄切換功能頁：
 
-專案基於 `PyQt6` 與 `PyQt6-Fluent-Widgets` 建構 Windows 11 風格 GUI，介面風格盡量與同倉庫的 `merge_live_photo_gui.py` 保持一致。
+- **LivePhoto 合併**：將同名照片與影片批次合成為 Google / Microsoft Photos 可識別的 Motion Photo。
+- **華為 LivePhoto 分離**：將華為相機或系統合併得到的單一 LivePhoto JPG 批次拆分為 `JPG + MP4`。
+- **Flyme LivePhoto 修復**：修復 Flyme 12.6 以下版本系統相機拍攝的舊 LivePhoto 中繼資料相容性問題。
 
-## 核心特性
+左上角選單按鈕可展開或收合邊欄。原本三個獨立 GUI 入口仍保留，方便單獨執行或回歸測試。
 
-- **批量掃描**：支援掃描目前目錄或所有子目錄。
-- **自動識別**：自動區分華為 LivePhoto JPG、普通靜態照片，以及已存在的同名 JPG/MP4 檔案。
-- **批量分離**：內嵌 LivePhoto 會被拆分為同名 `.jpg` 與 `.mp4`。
-- **檔案整理**：已存在的同名 JPG/MP4 檔案可複製到統一輸出目錄並保留目錄層級。
-- **衝突策略**：照片和影片目標已存在時可分別選擇跳過或覆蓋。
-- **中英文切換**：GUI 文案已分離到 `split_huawei_live_photo_translations.py`。
-- **設定記憶**：語言、輸入輸出目錄、掃描規則、衝突策略會儲存到本機設定。
+## 核心功能
 
-## 已測試裝置
+### LivePhoto 合併
 
-| 平台 | 裝置 | 代號 | 系統版本 | 來源 |
-| --- | --- | --- | --- | --- |
-| HarmonyOS | HUAWEI Mate 20 | HMA-AL00 | HarmonyOS 4.0.0.121 | 本機 LivePhoto JPG 檔案 |
-| HarmonyOS | HUAWEI nova 5z | SPN-AL00 | HarmonyOS 2.0.0.165 | 本機 LivePhoto JPG 檔案 |
-| HarmonyOS NEXT | HUAWEI nova 14 Ultra | MRT-AL10 | HarmonyOS 5 / 6 | 合併後的單個 LivePhoto JPG 檔案 |
+- 自動掃描 `JPG/JPEG/HEIC/HEIF` 圖片，並依同名規則匹配 `MP4/MOV` 影片。
+- 批次合成為 Google Photos / Microsoft Photos 可識別的 Motion Photo。
+- 盡量保留原始 EXIF、拍攝時間與檔案時間。
+- 可將沒有匹配影片的靜態照片整理到 `Static_Photos`。
+- 支援彙總輸出到 `All_Processed_Summary`。
+- 可透過 `pillow-heif` 啟用 HEIC/HEIF 支援。
 
-> HarmonyOS 5 / 6 拍攝後，透過華為雲下載、系統介面呼叫、檔案管理複製，或分享給 HarmonyOS 4 及以下裝置等方式得到的單個 LivePhoto JPG 檔案，也支援分離為 JPG 和 MP4。
+### 華為 LivePhoto 分離
+
+- 支援掃描目前資料夾或所有子資料夾。
+- 自動識別華為內嵌 LivePhoto JPG、普通靜態照片，以及同名 `JPG + MP4` 檔案。
+- 將內嵌 LivePhoto 拆分為同名 `.jpg` 與 `.mp4`。
+- 輸出時保留來源目錄層級，並可分別設定照片與影片衝突策略。
+
+### Flyme LivePhoto 修復
+
+- 自動區分待修復 Flyme 動態照片、已相容動態照片、靜態照片、其他手機照片和無關檔案。
+- 基於 ExifTool 修補中繼資料，讓舊 Flyme LivePhoto 能被 Microsoft Photos、Google Photos 等平台識別。
+- 支援拖曳匯入、非同步掃描、框選、排序、右鍵選單、複製/移動/修復並輸出。
+- 可依類別控制匯出範圍，並記憶輸出目錄、語言和處理選項。
+
+## 已測試設備
+
+| 平台 | 設備 | 系統版本 | 覆蓋功能 |
+| --- | --- | --- | --- |
+| HarmonyOS | HUAWEI Mate 20 | HarmonyOS 4.0.0.121 | 華為 LivePhoto 分離 |
+| HarmonyOS | HUAWEI nova 5z | HarmonyOS 2.0.0.165 | 華為 LivePhoto 分離 |
+| HarmonyOS NEXT | HUAWEI nova 14 Ultra | HarmonyOS 5 / 6 | 華為分離、LivePhoto 合併 |
+| iOS | iPhone 6s Plus | iOS 15.8.7 | LivePhoto 合併 |
+| iOS | iPhone 7 Plus | iOS 14.8.1 | LivePhoto 合併 |
+| Flyme | Meizu 21 / 21 Note | Flyme 12.6 以下 | Flyme LivePhoto 修復 |
 
 ## 快速開始
 
-### 1. Windows 便攜版直接執行
+### Windows 可攜版
 
-- 作業系統：Windows 10 / 11
-- 執行環境：無需安裝 Python
+- 作業系統：Windows 10 / 11 x64
+- 執行環境：不需要安裝 Python
 
-從 release 下載以下兩個檔案：
+下載 release 中的可攜包與 SHA256 檔案，解壓縮後執行：
 
 ```text
-SplitHuaweiLivePhotoTool-1.0.0-20260523-windows-x64-portable.zip
-SplitHuaweiLivePhotoTool-1.0.0-20260523-windows-x64-portable.sha256.txt
+AzureKilnPhotoTool.exe
 ```
 
-可選：解壓前校驗 SHA256：
+校驗範例：
 
 ```powershell
-Get-FileHash .\SplitHuaweiLivePhotoTool-1.0.0-20260523-windows-x64-portable.zip -Algorithm SHA256
-Get-Content .\SplitHuaweiLivePhotoTool-1.0.0-20260523-windows-x64-portable.sha256.txt
+Get-FileHash .\AzureKilnPhotoTool-1.0.0-20260523-windows-x64-portable.zip -Algorithm SHA256
+Get-Content .\AzureKilnPhotoTool-1.0.0-20260523-windows-x64-portable.sha256.txt
 ```
 
-解壓便攜包後執行：
+### 從原始碼執行
 
-```text
-SplitHuaweiLivePhotoTool.exe
-```
+執行依賴：
 
-便攜包內包含：
-
-- Windows x64 GUI 程式
-- 简体中文、繁體中文、English 文件說明
-
-### 2. 原始碼執行
-
-- 執行依賴：Python 3.10+
-- 核心元件：`PyQt6`、`PyQt6-Fluent-Widgets`、`PyQt6-Frameless-Window`、`Pillow`
+- Python 3.10+
+- `PyQt6`
+- `PyQt6-Fluent-Widgets`
+- `PyQt6-Frameless-Window` 或 `qframelesswindow`
+- `Pillow`
+- 可選：`pillow-heif`，用於 HEIC/HEIF 支援
+- 可選：`send2trash`，用於移入回收站
+- Flyme 修復需要 `ExifTool`
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
 
-pip install PyQt6 PyQt6-Fluent-Widgets PyQt6-Frameless-Window Pillow
+pip install PyQt6 PyQt6-Fluent-Widgets PyQt6-Frameless-Window Pillow pillow-heif send2trash pywin32
 
-python split_huawei_live_photo_gui.py
+python unified_gui.py
 ```
 
-命令列分離單個檔案或目錄：
+ExifTool 查找順序：
+
+```text
+vendor/exiftool/exiftool.exe
+exiftool/exiftool.exe
+bin/exiftool.exe
+系統 PATH
+```
+
+## 使用說明
+
+1. 啟動統一 GUI：`python unified_gui.py` 或執行可攜版 `AzureKilnPhotoTool.exe`。
+2. 透過左側邊欄選擇功能頁：`LivePhoto 合併`、`華為 LivePhoto 分離`、`Flyme LivePhoto 修復`。
+3. 點擊左上角選單按鈕可收合或展開邊欄。
+4. 在對應功能頁設定來源資料夾、輸出資料夾、掃描規則和衝突策略。
+5. 點擊目前頁面的開始、分離或修復按鈕執行批次處理。
+
+三個舊入口仍可單獨執行：
+
+```powershell
+python merge_live_photo_gui.py
+python split_huawei_live_photo_gui.py
+python main_gui.py
+```
+
+## 命令列工具
+
+LivePhoto 合併：
+
+```powershell
+python merge_live_photo.py .\input_dir .\output_dir
+```
+
+華為 LivePhoto 分離：
 
 ```powershell
 python split_huawei_live_photo.py .\sample\HarmonyOS4\Source\IMG_20260515_230101.jpg .\sample\HarmonyOS4\SplitOutput
 python split_huawei_live_photo.py .\sample\HarmonyOS4\Source .\sample\HarmonyOS4\SplitOutput
 ```
 
-## 使用說明
+Flyme 修復的批次流程主要透過 GUI 提供，核心邏輯位於 `flyme_livephoto_fix_core.py` 與 `main_gui_logic.py`。
 
-1. 啟動 `SplitHuaweiLivePhotoTool.exe` 或執行 `python split_huawei_live_photo_gui.py`。
-2. 選擇來源資料夾。來源資料夾可以包含華為相機拍攝，或透過華為雲、系統介面、檔案管理複製、跨裝置分享等方式得到的單個 LivePhoto JPG 檔案。
-3. 確認輸出目錄，按需選擇是否掃描子目錄。
-4. 設定目標檔案已存在時的處理策略。
-5. 點選 **開始批量分離**。
+## 打包構建
 
-輸出檔案會按來源目錄層級寫入輸出目錄。普通靜態照片只會標記為跳過，不會複製到輸出目錄。
-
-## 打包建置
+統一 GUI 建議打包為可攜目錄包，方便攜帶 ExifTool：
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name SplitHuaweiLivePhotoTool `
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --windowed --name AzureKilnPhotoTool `
   --collect-all qfluentwidgets `
   --collect-all qframelesswindow `
-  --exclude-module PyQt6.QtNetwork `
-  --exclude-module PyQt6.QtOpenGL `
-  --exclude-module PyQt6.QtQml `
-  --exclude-module PyQt6.QtQuick `
-  --exclude-module PyQt6.QtSql `
-  --exclude-module PyQt6.QtTest `
-  --exclude-module PyQt6.QtWebEngineCore `
-  --exclude-module PyQt6.QtWebEngineWidgets `
-  .\split_huawei_live_photo_gui.py
+  --hidden-import pillow_heif `
+  --hidden-import send2trash `
+  --add-data "vendor/exiftool;exiftool" `
+  .\unified_gui.py
 ```
 
-建置產物：
-
-```text
-dist\SplitHuaweiLivePhotoTool.exe
-```
+如果只需要單一執行檔，也可使用 `--onefile`；但 Flyme 修復功能仍需要確保 `exiftool.exe` 可被程式找到。
 
 ## 專案結構
 
-- `split_huawei_live_photo.py`：命令列與核心分離邏輯。
-- `split_huawei_live_photo_gui.py`：PyQt6 / Fluent GUI。
-- `split_huawei_live_photo_translations.py`：拆分工具中英文 UI 文案。
-- `merge_live_photo_gui.py`：合成工具 GUI，可作為介面風格參考。
-- `merge_live_photo_translations.py`：合成工具中英文 UI 文案。
+- `unified_gui.py`：三功能合一的側欄 GUI 入口。
+- `merge_live_photo_gui.py`：LivePhoto 合併頁面和獨立入口。
+- `merge_live_photo.py`：命令列批次合併腳本。
+- `split_huawei_live_photo_gui.py`：華為 LivePhoto 分離頁面和獨立入口。
+- `split_huawei_live_photo.py`：命令列分離腳本。
+- `main_gui.py`：Flyme LivePhoto 修復頁面和獨立入口。
+- `main_gui_logic.py`：Flyme 檔案掃描、分類、輸出和修復流程。
+- `flyme_livephoto_fix_core.py`：基於 ExifTool 的識別與修復引擎。
+- `*_translations.py`：各功能 GUI 的多語言文字。
 - `sample/`：測試樣例。
 
-本機設定儲存位置：
+本機設定保存位置：
 
 ```text
+%APPDATA%\MergeLivePhotoGUI\settings.json
 %APPDATA%\SplitHuaweiLivePhotoGUI\settings.json
+%APPDATA%\FlymeLivePhotoFix\settings.json
 ```
 
 ## 開源協議
 
-本專案基於倉庫中的 `LICENSE` 檔案發布。
+本專案基於倉庫中的 `LICENSE` 文件發布。
