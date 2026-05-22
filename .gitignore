@@ -1,0 +1,12 @@
+.idea/
+.venv/
+__pycache__/
+*.py[cod]
+
+build/
+dist/
+release/
+*.spec
+
+tmp_verify*/
+*.log
