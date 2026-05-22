@@ -321,12 +321,14 @@ class ProcessWorker(QObject):
 
 
 class MainWindow(FramelessMainWindow):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None, embedded: bool = False):
+        super().__init__(parent)
+        self._embedded = embedded
         self.setWindowTitle("华为LivePhoto批量分离工具")
-        self.resize(1280, 820)
         self._title_bar_height = 36
-        self._set_blue_title_bar()
+        if not self._embedded:
+            self.resize(1280, 820)
+            self._set_blue_title_bar()
 
         self.lang = DEFAULT_LANGUAGE
         self._last_status_key = "waiting_source"
@@ -343,7 +345,7 @@ class MainWindow(FramelessMainWindow):
         root = QWidget(self)
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(20, self._title_bar_height + 12, 20, 18)
+        outer.setContentsMargins(20, (0 if self._embedded else self._title_bar_height) + 12, 20, 18)
         outer.setSpacing(12)
 
         header_card = QWidget(self)
@@ -573,11 +575,13 @@ class MainWindow(FramelessMainWindow):
 
     def showEvent(self, e):
         super().showEvent(e)
-        self._sync_title_bar()
+        if not self._embedded:
+            self._sync_title_bar()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._sync_title_bar()
+        if not self._embedded:
+            self._sync_title_bar()
 
     def tr(self, key: str, **kwargs) -> str:
         text = TRANSLATIONS.get(self.lang, TRANSLATIONS["zh"]).get(key, key)

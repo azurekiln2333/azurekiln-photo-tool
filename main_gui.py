@@ -273,15 +273,17 @@ def _pick_icon(*names: str):
 
 
 class MainWindow(FramelessMainWindow):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None, embedded: bool = False):
+        super().__init__(parent)
+        self._embedded = embedded
         self.lang = DEFAULT_LANGUAGE
         self._last_status_key = "waiting_choose_dir"
         self._last_status_kwargs = {}
         self.setWindowTitle(self.tr("app_title"))
-        self.resize(1280, 860)
         self._title_bar_height = 36
-        self._set_blue_title_bar()
+        if not self._embedded:
+            self.resize(1280, 860)
+            self._set_blue_title_bar()
 
         self.items: dict[str, PhotoItem] = {}
         self._drop_thread: QThread | None = None
@@ -312,7 +314,7 @@ class MainWindow(FramelessMainWindow):
         root = QWidget(self)
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(20, self._title_bar_height + 12, 20, 18)
+        outer.setContentsMargins(20, (0 if self._embedded else self._title_bar_height) + 12, 20, 18)
         outer.setSpacing(12)
 
         header_card = QWidget(self)
@@ -540,7 +542,8 @@ class MainWindow(FramelessMainWindow):
         self._load_settings()
         self._apply_language()
         self._connect_settings_signals()
-        self._sync_title_bar()
+        if not self._embedded:
+            self._sync_title_bar()
 
     def tr(self, key: str, **kwargs) -> str:
         text = TRANSLATIONS.get(self.lang, TRANSLATIONS["zh"]).get(key, key)
@@ -747,11 +750,13 @@ class MainWindow(FramelessMainWindow):
 
     def showEvent(self, e):
         super().showEvent(e)
-        self._sync_title_bar()
+        if not self._embedded:
+            self._sync_title_bar()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._sync_title_bar()
+        if not self._embedded:
+            self._sync_title_bar()
 
     def _notify(self, title: str, content: str, is_error: bool = False):
         if is_error:
