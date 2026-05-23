@@ -54,6 +54,94 @@ XMP_IDENTIFIER = b"http://ns.adobe.com/xap/1.0/\x00"
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".heic", ".heif")
 VIDEO_SUFFIXES = (".mp4", ".mov")
 EXIF_TIMESTAMP_TAGS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
+TASK_KIND_LIVE = "task_kind_live"
+TASK_KIND_STATIC = "task_kind_static"
+TASK_KIND_VIDEO = "task_kind_video"
+TASK_KIND_OTHER = "task_kind_other"
+EXTRA_TRANSLATIONS = {
+    "zh": {
+        "output_dir": "汇总输出目录",
+        "output_placeholder": "选择处理完成后的汇总输出目录",
+        "processing_options": "汇总输出选项",
+        "summary_live": "合并后的 LivePhoto",
+        "summary_static": "静态照片",
+        "summary_other": "其他文件",
+        "summary_trash": "汇总后将中间产物移入回收站",
+        "table_file": "文件相对路径",
+        "table_type": "类型",
+        TASK_KIND_LIVE: "待合并 LivePhoto",
+        TASK_KIND_STATIC: "静态照片",
+        TASK_KIND_VIDEO: "未配对视频",
+        TASK_KIND_OTHER: "其他文件",
+        "status_live_skipped": "已跳过：未勾选 LivePhoto 汇总",
+        "status_static_skipped": "已跳过：未勾选静态照片汇总",
+        "status_other_skipped": "已跳过：未勾选其他文件汇总",
+        "status_other_exists": "跳过：其他文件已存在",
+        "status_other_copied": "已复制其他文件",
+        "status_other_failed": "其他文件复制失败: {error}",
+        "drop_added": "已拖拽添加 {added} 个文件，当前共 {count} 项",
+        "drop_no_new": "未添加新的文件",
+        "scan_none_status": "未找到文件",
+        "scan_none_content": "所选目录中未找到可处理文件",
+        "scan_done_status": "共扫描到 {count} 个文件，准备就绪",
+        "scan_done_content": "共找到 {count} 个文件",
+        "task_done_message": (
+            "任务结束，统计如下：\n\n"
+            "LivePhoto 合并成功: {success}\n"
+            "LivePhoto 因已存在跳过: {live_skip}\n"
+            "静态照片中间产物生成: {static_copy}\n"
+            "静态照片中间产物因已存在跳过: {static_skip}\n"
+            "其他文件汇总: {other_copy}\n"
+            "其他文件因已存在跳过: {other_skip}\n"
+            "失败或环境错误: {failed}\n\n"
+        ),
+        "summary_result": "汇总文件数: {success}\n汇总失败数: {failed}\n汇总目录: {path}\n",
+        "summary_trash_done": "中间产物已移入回收站。\n",
+        "output_result": "LivePhoto 中间目录: {path}\n",
+        "static_output_result": "静态照片中间目录: {path}\n",
+    },
+    "en": {
+        "output_dir": "Summary output folder",
+        "output_placeholder": "Choose the final summary output folder",
+        "processing_options": "Summary output options",
+        "summary_live": "Merged LivePhotos",
+        "summary_static": "Static photos",
+        "summary_other": "Other files",
+        "summary_trash": "Move intermediate artifacts to recycle bin after summary",
+        "table_file": "Relative file path",
+        "table_type": "Type",
+        TASK_KIND_LIVE: "LivePhoto to merge",
+        TASK_KIND_STATIC: "Static photo",
+        TASK_KIND_VIDEO: "Unpaired video",
+        TASK_KIND_OTHER: "Other file",
+        "status_live_skipped": "Skipped: LivePhoto summary disabled",
+        "status_static_skipped": "Skipped: static photo summary disabled",
+        "status_other_skipped": "Skipped: other file summary disabled",
+        "status_other_exists": "Skipped: other file exists",
+        "status_other_copied": "Copied other file",
+        "status_other_failed": "Other file copy failed: {error}",
+        "drop_added": "Dropped {added} file(s), total {count}",
+        "drop_no_new": "No new files were added",
+        "scan_none_status": "No files found",
+        "scan_none_content": "No processable files found in the selected folder",
+        "scan_done_status": "Scanned {count} file(s), ready",
+        "scan_done_content": "Found {count} file(s)",
+        "task_done_message": (
+            "Task finished. Summary:\n\n"
+            "LivePhotos merged: {success}\n"
+            "LivePhotos skipped because target exists: {live_skip}\n"
+            "Static photo intermediate files created: {static_copy}\n"
+            "Static photo intermediate files skipped because target exists: {static_skip}\n"
+            "Other files summarized: {other_copy}\n"
+            "Other files skipped because target exists: {other_skip}\n"
+            "Failed or environment errors: {failed}\n\n"
+        ),
+        "summary_result": "Summarized files: {success}\nSummary failures: {failed}\nSummary folder: {path}\n",
+        "summary_trash_done": "Intermediate artifacts were moved to recycle bin.\n",
+        "output_result": "LivePhoto intermediate folder: {path}\n",
+        "static_output_result": "Static photo intermediate folder: {path}\n",
+    },
+}
 
 
 def _get_windows_pictures_dir() -> Path | None:
@@ -269,6 +357,10 @@ def _is_image_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
 
 
+def _is_video_file(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in VIDEO_SUFFIXES
+
+
 def _find_matching_video(img_path: Path) -> Path | None:
     for suffix in VIDEO_SUFFIXES:
         for candidate_suffix in (suffix, suffix.upper()):
@@ -295,6 +387,8 @@ def _make_task(img_path: Path, base_dir: Path | None = None) -> dict:
         rel_path = Path(img_path.name)
 
     return {
+        "kind": TASK_KIND_LIVE if video_path is not None else TASK_KIND_STATIC,
+        "path": img_path,
         "img_path": img_path,
         "mp4_path": video_path,
         "rel_path": rel_path,
@@ -302,6 +396,29 @@ def _make_task(img_path: Path, base_dir: Path | None = None) -> dict:
         "is_heic_error": is_heic and not HAS_HEIC,
         "has_mp4_text": "yes" if video_path is not None else "no",
         "status": status,
+    }
+
+
+def _make_file_task(file_path: Path, base_dir: Path | None = None) -> dict:
+    if base_dir is not None:
+        try:
+            rel_path = file_path.relative_to(base_dir)
+        except ValueError:
+            rel_path = Path(file_path.name)
+    else:
+        rel_path = Path(file_path.name)
+
+    kind = TASK_KIND_VIDEO if _is_video_file(file_path) else TASK_KIND_OTHER
+    return {
+        "kind": kind,
+        "path": file_path,
+        "img_path": None,
+        "mp4_path": None,
+        "rel_path": rel_path,
+        "is_heic": False,
+        "is_heic_error": False,
+        "has_mp4_text": "yes" if kind == TASK_KIND_VIDEO else "no",
+        "status": "status_pending",
     }
 
 
@@ -391,43 +508,38 @@ class ScanWorker(QObject):
         self.recursive = recursive
 
     def run(self):
-        img_files_set: set[Path] = set()
+        all_files_set: set[Path] = set()
         iterator = self.input_dir.rglob("*") if self.recursive else self.input_dir.glob("*")
-        img_files_set.update(path for path in iterator if _is_image_file(path))
+        all_files_set.update(path for path in iterator if path.is_file())
 
-        img_files = sorted(img_files_set)
-        for img_path in img_files:
-            video_path = _find_matching_video(img_path)
-            mp4_path = img_path.with_suffix(".mp4")
-            if not mp4_path.exists():
-                mp4_path = img_path.with_suffix(".MP4")
-            if video_path is not None:
-                mp4_path = video_path
+        paired_videos: set[Path] = set()
+        tasks: list[dict] = []
+        for file_path in sorted(all_files_set):
+            if not _is_image_file(file_path):
+                continue
+            task = _make_task(file_path, self.input_dir)
+            if task["mp4_path"] is not None:
+                try:
+                    paired_videos.add(task["mp4_path"].resolve())
+                except Exception:
+                    paired_videos.add(task["mp4_path"])
+            tasks.append(task)
 
-            is_heic = img_path.suffix.lower() in (".heic", ".heif")
-            if is_heic and not HAS_HEIC:
-                status = "status_missing_heif"
-            else:
-                status = "status_pending"
-
+        for file_path in sorted(all_files_set):
+            if _is_image_file(file_path):
+                continue
             try:
-                rel_path = img_path.relative_to(self.input_dir)
-            except ValueError:
-                rel_path = Path(img_path.name)
+                resolved = file_path.resolve()
+            except Exception:
+                resolved = file_path
+            if resolved in paired_videos:
+                continue
+            tasks.append(_make_file_task(file_path, self.input_dir))
 
-            self.row_ready.emit(
-                {
-                    "img_path": img_path,
-                    "mp4_path": mp4_path if mp4_path.exists() else None,
-                    "rel_path": rel_path,
-                    "is_heic": is_heic,
-                    "is_heic_error": is_heic and not HAS_HEIC,
-                    "has_mp4_text": "yes" if mp4_path.exists() else "no",
-                    "status": status,
-                }
-            )
+        for task in sorted(tasks, key=lambda item: str(item["rel_path"])):
+            self.row_ready.emit(task)
 
-        self.finished.emit(len(img_files))
+        self.finished.emit(len(tasks))
 
 
 class ProcessWorker(QObject):
@@ -441,31 +553,31 @@ class ProcessWorker(QObject):
         self.options = options
 
     def run(self):
-        out_path = Path(self.options["output_dir"])
+        summary_out_path = Path(self.options["output_dir"])
+        summary_out_path.mkdir(parents=True, exist_ok=True)
+
+        base_path = summary_out_path if summary_out_path.parent == summary_out_path else summary_out_path.parent
+        out_path = base_path / "MotionPhotosOutput"
+        static_out_path = base_path / "Static_Photos"
+
         out_path.mkdir(parents=True, exist_ok=True)
-
-        if out_path.parent == out_path:
-            static_out_path = out_path / "Static_Photos"
-            summary_out_path = out_path / "All_Processed_Summary"
-        else:
-            static_out_path = out_path.parent / "Static_Photos"
-            summary_out_path = out_path.parent / "All_Processed_Summary"
-
-        if self.options["copy_static"]:
-            static_out_path.mkdir(parents=True, exist_ok=True)
+        static_out_path.mkdir(parents=True, exist_ok=True)
 
         total = len(self.tasks)
         success_count = 0
         live_exist_skip_count = 0
         static_copy_count = 0
         static_exist_skip_count = 0
+        other_copy_count = 0
+        other_exist_skip_count = 0
         fail_count = 0
         error_skip_count = 0
         summary_success = 0
         summary_failed = 0
-        files_to_summarize: list[tuple[Path, Path]] = []
 
         for index, task in enumerate(self.tasks):
+            task_kind = task.get("kind", TASK_KIND_STATIC)
+            file_path = task.get("path")
             img_path = task["img_path"]
             mp4_path = task["mp4_path"]
             rel_path = task["rel_path"]
@@ -474,6 +586,28 @@ class ProcessWorker(QObject):
 
             progress_percent = int(((index + 1) / total) * 100) if total else 0
 
+            if task_kind in (TASK_KIND_VIDEO, TASK_KIND_OTHER):
+                if self.options["summary_other"] and file_path is not None:
+                    try:
+                        dest_file = summary_out_path / rel_path
+                        dest_file.parent.mkdir(parents=True, exist_ok=True)
+                        if dest_file.exists() and self.options["other_exist_action"] == "skip":
+                            other_exist_skip_count += 1
+                            self.row_update.emit(index, "status_other_exists")
+                        else:
+                            shutil.copy2(file_path, dest_file)
+                            other_copy_count += 1
+                            summary_success += 1
+                            self.row_update.emit(index, "status_other_copied")
+                    except Exception as exc:
+                        fail_count += 1
+                        summary_failed += 1
+                        self.row_update.emit(index, f"status_other_failed|{str(exc)[:28]}")
+                else:
+                    self.row_update.emit(index, "status_other_skipped")
+                self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
+                continue
+
             if is_heic_error:
                 error_skip_count += 1
                 self.row_update.emit(index, "status_skip_missing_heif")
@@ -481,47 +615,50 @@ class ProcessWorker(QObject):
                 continue
 
             if mp4_path is None:
-                if self.options["copy_static"]:
-                    try:
-                        convert_to_jpg = is_heic and self.options["convert_static_heic"]
-                        final_rel_path = rel_path.with_suffix(".jpg") if convert_to_jpg else rel_path
-                        target_static_file = static_out_path / final_rel_path
-                        target_static_file.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    convert_to_jpg = is_heic and self.options["convert_static_heic"]
+                    final_rel_path = rel_path.with_suffix(".jpg") if convert_to_jpg else rel_path
+                    target_static_file = static_out_path / final_rel_path
+                    target_static_file.parent.mkdir(parents=True, exist_ok=True)
 
-                        if target_static_file.exists() and self.options["static_exist_action"] == "skip":
-                            static_exist_skip_count += 1
-                            self.row_update.emit(index, "status_static_exists")
-                            files_to_summarize.append((target_static_file, final_rel_path))
+                    if target_static_file.exists() and self.options["static_exist_action"] == "skip":
+                        static_exist_skip_count += 1
+                        self.row_update.emit(index, "status_static_exists")
+                    else:
+                        if convert_to_jpg:
+                            img = Image.open(img_path)
+                            exif = img.info.get("exif", b"")
+                            if img.mode != "RGB":
+                                img = img.convert("RGB")
+                            img.save(target_static_file, format="JPEG", quality=95, exif=exif)
+                            _apply_output_timestamp(target_static_file, img_path)
+                            status_text = "status_static_converted"
                         else:
-                            if convert_to_jpg:
-                                img = Image.open(img_path)
-                                exif = img.info.get("exif", b"")
-                                if img.mode != "RGB":
-                                    img = img.convert("RGB")
-                                img.save(target_static_file, format="JPEG", quality=95, exif=exif)
-                                _apply_output_timestamp(target_static_file, img_path)
-                                status_text = "status_static_converted"
-                            else:
-                                shutil.copy2(img_path, target_static_file)
-                                _apply_output_timestamp(target_static_file, img_path)
-                                status_text = "status_static_copied"
+                            shutil.copy2(img_path, target_static_file)
+                            _apply_output_timestamp(target_static_file, img_path)
+                            status_text = "status_static_copied"
 
-                            static_copy_count += 1
-                            self.row_update.emit(index, status_text)
-                            files_to_summarize.append((target_static_file, final_rel_path))
-                    except Exception as exc:
-                        fail_count += 1
-                        self.row_update.emit(index, f"status_static_failed|{str(exc)[:28]}")
-                else:
-                    self.row_update.emit(index, "status_skip_no_video")
+                        static_copy_count += 1
+                        self.row_update.emit(index, status_text)
+                    if self.options["summary_static"]:
+                        try:
+                            dest_file = summary_out_path / final_rel_path
+                            dest_file.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(target_static_file, dest_file)
+                            summary_success += 1
+                        except Exception:
+                            summary_failed += 1
+                except Exception as exc:
+                    fail_count += 1
+                    self.row_update.emit(index, f"status_static_failed|{str(exc)[:28]}")
             else:
-                output_file = out_path / rel_path.with_suffix(".jpg")
+                final_rel_path = rel_path.with_suffix(".jpg")
+                output_file = out_path / final_rel_path
                 output_file.parent.mkdir(parents=True, exist_ok=True)
 
                 if output_file.exists() and self.options["live_exist_action"] == "skip":
                     live_exist_skip_count += 1
                     self.row_update.emit(index, "status_live_exists")
-                    files_to_summarize.append((output_file, rel_path.with_suffix(".jpg")))
                 else:
                     self.row_update.emit(index, "status_merging")
                     try:
@@ -530,23 +667,30 @@ class ProcessWorker(QObject):
 
                         success_count += 1
                         self.row_update.emit(index, "status_merge_success")
-                        files_to_summarize.append((output_file, rel_path.with_suffix(".jpg")))
                     except Exception as exc:
                         fail_count += 1
                         self.row_update.emit(index, f"status_merge_failed|{str(exc)[:28]}")
+                        self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
+                        continue
+
+                if self.options["summary_live"]:
+                    try:
+                        dest_file = summary_out_path / final_rel_path
+                        dest_file.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(output_file, dest_file)
+                        summary_success += 1
+                    except Exception:
+                        summary_failed += 1
 
             self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
 
-        if self.options["do_summary"] and files_to_summarize:
+        if self.options["summary_trash"]:
             self.progress_update.emit(100, "status_summarizing")
-            for processed_file, rel_p in files_to_summarize:
+            for intermediate_dir in (out_path, static_out_path):
+                if not intermediate_dir.exists():
+                    continue
                 try:
-                    dest_file = summary_out_path / rel_p
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(processed_file, dest_file)
-                    summary_success += 1
-                    if self.options["summary_trash"]:
-                        send2trash(str(processed_file))
+                    send2trash(str(intermediate_dir))
                 except Exception:
                     summary_failed += 1
 
@@ -556,6 +700,8 @@ class ProcessWorker(QObject):
                 "live_exist_skip_count": live_exist_skip_count,
                 "static_copy_count": static_copy_count,
                 "static_exist_skip_count": static_exist_skip_count,
+                "other_copy_count": other_copy_count,
+                "other_exist_skip_count": other_exist_skip_count,
                 "fail_count": fail_count,
                 "error_skip_count": error_skip_count,
                 "summary_success": summary_success,
@@ -563,8 +709,6 @@ class ProcessWorker(QObject):
                 "out_path": str(out_path),
                 "static_out_path": str(static_out_path),
                 "summary_out_path": str(summary_out_path),
-                "did_summary": self.options["do_summary"],
-                "copy_static": self.options["copy_static"],
                 "summary_trash": self.options["summary_trash"],
             }
         )
@@ -639,7 +783,7 @@ class MainWindow(FramelessMainWindow):
         row1.setSpacing(10)
         self.input_label = BodyLabel(self.tr("source_dir"), self)
         self.input_edit = LineEdit(self)
-        self.input_edit.setReadOnly(True)
+        self.input_edit.setReadOnly(False)
         self.input_edit.setPlaceholderText(self.tr("source_placeholder"))
         self.btn_input = PushButton(self.tr("choose_source"), self)
         self.btn_input.setIcon(_pick_icon("FOLDER", "FOLDER_ADD"))
@@ -652,7 +796,7 @@ class MainWindow(FramelessMainWindow):
         row2.setSpacing(10)
         self.output_label = BodyLabel(self.tr("output_dir"), self)
         self.output_edit = LineEdit(self)
-        self.output_edit.setReadOnly(True)
+        self.output_edit.setReadOnly(False)
         self.output_edit.setPlaceholderText(self.tr("output_placeholder"))
         self.btn_output = PushButton(self.tr("choose_output"), self)
         self.btn_output.setIcon(_pick_icon("SAVE", "DOWNLOAD"))
@@ -679,6 +823,29 @@ class MainWindow(FramelessMainWindow):
         row3.addStretch(1)
         option_layout.addLayout(row3)
 
+        summary_card = CardWidget(self)
+        summary_layout = QVBoxLayout(summary_card)
+        summary_layout.setContentsMargins(16, 14, 16, 14)
+        summary_layout.setSpacing(10)
+
+        self.summary_settings_label = BodyLabel(self.tr("processing_options"), self)
+        self.summary_settings_label.setStyleSheet("font-weight: 600;")
+        summary_layout.addWidget(self.summary_settings_label)
+
+        static_row = QHBoxLayout()
+        static_row.setSpacing(12)
+        self.summary_live_check = CheckBox(self.tr("summary_live"), self)
+        self.summary_static_check = CheckBox(self.tr("summary_static"), self)
+        self.summary_other_check = CheckBox(self.tr("summary_other"), self)
+        self.summary_live_check.setChecked(True)
+        self.summary_static_check.setChecked(True)
+        self.summary_other_check.setChecked(True)
+        static_row.addWidget(self.summary_live_check)
+        static_row.addWidget(self.summary_static_check)
+        static_row.addWidget(self.summary_other_check)
+        static_row.addStretch(1)
+        summary_layout.addLayout(static_row)
+
         output_card = CardWidget(self)
         output_layout = QVBoxLayout(output_card)
         output_layout.setContentsMargins(16, 14, 16, 14)
@@ -700,21 +867,17 @@ class MainWindow(FramelessMainWindow):
         live_row.addStretch(1)
         output_layout.addLayout(live_row)
 
-        static_row = QHBoxLayout()
-        static_row.setSpacing(12)
-        self.copy_static_check = CheckBox(self.tr("copy_static"), self)
-        self.copy_static_check.setChecked(True)
-        self.copy_static_check.toggled.connect(self.toggle_static_options)
-        static_row.addWidget(self.copy_static_check)
+        static_exists_row = QHBoxLayout()
+        static_exists_row.setSpacing(12)
         self.static_exists_label = BodyLabel(self.tr("static_exists"), self)
-        static_row.addWidget(self.static_exists_label)
+        static_exists_row.addWidget(self.static_exists_label)
         self.static_skip_radio = RadioButton(self.tr("skip"), self)
         self.static_overwrite_radio = RadioButton(self.tr("overwrite"), self)
         self.static_skip_radio.setChecked(True)
-        static_row.addWidget(self.static_skip_radio)
-        static_row.addWidget(self.static_overwrite_radio)
-        static_row.addStretch(1)
-        output_layout.addLayout(static_row)
+        static_exists_row.addWidget(self.static_skip_radio)
+        static_exists_row.addWidget(self.static_overwrite_radio)
+        static_exists_row.addStretch(1)
+        output_layout.addLayout(static_exists_row)
 
         heic_row = QHBoxLayout()
         heic_row.setSpacing(12)
@@ -724,13 +887,9 @@ class MainWindow(FramelessMainWindow):
         heic_row.addStretch(1)
         output_layout.addLayout(heic_row)
 
+        self.summary_trash_check = CheckBox(self.tr("summary_trash"), self)
         summary_row = QHBoxLayout()
         summary_row.setSpacing(12)
-        self.do_summary_check = CheckBox(self.tr("do_summary"), self)
-        self.do_summary_check.toggled.connect(self.toggle_summary_options)
-        self.summary_trash_check = CheckBox(self.tr("summary_trash"), self)
-        self.summary_trash_check.setEnabled(False)
-        summary_row.addWidget(self.do_summary_check)
         summary_row.addWidget(self.summary_trash_check)
         summary_row.addStretch(1)
         output_layout.addLayout(summary_row)
@@ -810,8 +969,11 @@ class MainWindow(FramelessMainWindow):
 
         outer.addWidget(header_card)
         outer.addWidget(path_card)
-        outer.addWidget(option_card)
-        outer.addWidget(output_card)
+        if not self._embedded:
+            outer.addWidget(option_card)
+        outer.addWidget(summary_card)
+        if not self._embedded:
+            outer.addWidget(output_card)
         outer.addWidget(table_card, 1)
         outer.addWidget(action_card)
         outer.addWidget(foot_card)
@@ -819,8 +981,8 @@ class MainWindow(FramelessMainWindow):
         self._init_default_output_dir()
         self._load_settings()
         self.toggle_static_options()
-        self.toggle_summary_options()
         self._apply_language()
+        self._connect_settings_signals()
 
     def _set_blue_title_bar(self):
         self.setTitleBar(StandardTitleBar(self))
@@ -870,19 +1032,27 @@ class MainWindow(FramelessMainWindow):
             self._sync_title_bar()
 
     def tr(self, key: str, **kwargs) -> str:
-        text = TRANSLATIONS.get(self.lang, TRANSLATIONS["zh"]).get(key, key)
+        text = EXTRA_TRANSLATIONS.get(self.lang, {}).get(
+            key,
+            TRANSLATIONS.get(self.lang, TRANSLATIONS["zh"]).get(key, key),
+        )
         return text.format(**kwargs) if kwargs else text
 
     def _table_headers(self) -> list[str]:
-        return [self.tr("table_image"), self.tr("table_video"), self.tr("table_status")]
+        return [self.tr("table_file"), self.tr("table_type"), self.tr("table_status")]
 
     def _display_status(self, status: str) -> str:
         if status.startswith("status_static_failed|"):
             return self.tr("status_static_failed", error=status.split("|", 1)[1])
         if status.startswith("status_merge_failed|"):
             return self.tr("status_merge_failed", error=status.split("|", 1)[1])
+        if status.startswith("status_other_failed|"):
+            return self.tr("status_other_failed", error=status.split("|", 1)[1])
         translated = self.tr(status)
         return translated if translated != status or status.startswith("status_") else status
+
+    def _display_task_type(self, task: dict) -> str:
+        return self.tr(task.get("kind", TASK_KIND_STATIC))
 
     def _display_progress_text(self, text: str) -> str:
         if text.startswith("progress|"):
@@ -916,16 +1086,18 @@ class MainWindow(FramelessMainWindow):
         self.output_edit.setPlaceholderText(self.tr("output_placeholder"))
         self.btn_output.setText(self.tr("choose_output"))
         self.include_subdirs_check.setText(self.tr("scan_subdirs"))
+        self.summary_settings_label.setText(self.tr("processing_options"))
         self.output_settings_label.setText(self.tr("processing_options"))
         self.live_exists_label.setText(self.tr("live_exists"))
         self.live_skip_radio.setText(self.tr("skip"))
         self.live_overwrite_radio.setText(self.tr("overwrite"))
-        self.copy_static_check.setText(self.tr("copy_static"))
+        self.summary_live_check.setText(self.tr("summary_live"))
+        self.summary_static_check.setText(self.tr("summary_static"))
+        self.summary_other_check.setText(self.tr("summary_other"))
         self.static_exists_label.setText(self.tr("static_exists"))
         self.static_skip_radio.setText(self.tr("skip"))
         self.static_overwrite_radio.setText(self.tr("overwrite"))
         self.convert_static_heic_check.setText(self.tr("convert_static_heic"))
-        self.do_summary_check.setText(self.tr("do_summary"))
         self.summary_trash_check.setText(self.tr("summary_trash"))
         self.drop_hint.setText(self.tr("drop_hint"))
         self.table.setHorizontalHeaderLabels(self._table_headers())
@@ -937,10 +1109,10 @@ class MainWindow(FramelessMainWindow):
 
     def _refresh_table_language(self):
         for row, task in enumerate(self.file_list):
-            video_item = self.table.item(row, 1)
+            type_item = self.table.item(row, 1)
             status_item = self.table.item(row, 2)
-            if video_item is not None:
-                video_item.setText(self.tr(task["has_mp4_text"]))
+            if type_item is not None:
+                type_item.setText(self._display_task_type(task))
             if status_item is not None:
                 status_item.setText(self._display_status(task["status"]))
 
@@ -987,7 +1159,7 @@ class MainWindow(FramelessMainWindow):
 
     def _init_default_output_dir(self):
         pics_dir = _get_windows_pictures_dir() or (Path.home() / "Pictures")
-        base = pics_dir / "MergeLivePhoto_output"
+        base = pics_dir / "MergeLivePhoto_Summary"
         try:
             base.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -1001,10 +1173,11 @@ class MainWindow(FramelessMainWindow):
             "output_dir": self.output_edit.text().strip(),
             "include_subdirs": self.include_subdirs_check.isChecked(),
             "live_exist_action": "skip" if self.live_skip_radio.isChecked() else "overwrite",
-            "copy_static": self.copy_static_check.isChecked(),
+            "summary_live": self.summary_live_check.isChecked(),
+            "summary_static": self.summary_static_check.isChecked(),
+            "summary_other": self.summary_other_check.isChecked(),
             "static_exist_action": "skip" if self.static_skip_radio.isChecked() else "overwrite",
             "convert_static_heic": self.convert_static_heic_check.isChecked(),
-            "do_summary": self.do_summary_check.isChecked(),
             "summary_trash": self.summary_trash_check.isChecked(),
         }
 
@@ -1019,6 +1192,23 @@ class MainWindow(FramelessMainWindow):
             )
         except Exception:
             pass
+
+    def _connect_settings_signals(self):
+        self.input_edit.editingFinished.connect(self._save_settings)
+        self.output_edit.editingFinished.connect(self._save_settings)
+        self.summary_static_check.toggled.connect(self.toggle_static_options)
+        for widget in (
+            self.include_subdirs_check,
+            self.live_skip_radio,
+            self.live_overwrite_radio,
+            self.summary_live_check,
+            self.summary_other_check,
+            self.static_skip_radio,
+            self.static_overwrite_radio,
+            self.convert_static_heic_check,
+            self.summary_trash_check,
+        ):
+            widget.toggled.connect(lambda _checked=False: self._save_settings())
 
     def _load_settings(self):
         if not self._settings_path.exists():
@@ -1048,11 +1238,12 @@ class MainWindow(FramelessMainWindow):
             self.include_subdirs_check.setChecked(bool(data.get("include_subdirs", True)))
             self.live_skip_radio.setChecked(data.get("live_exist_action", "skip") != "overwrite")
             self.live_overwrite_radio.setChecked(data.get("live_exist_action", "skip") == "overwrite")
-            self.copy_static_check.setChecked(bool(data.get("copy_static", True)))
+            self.summary_live_check.setChecked(bool(data.get("summary_live", True)))
+            self.summary_static_check.setChecked(bool(data.get("summary_static", data.get("copy_static", True))))
+            self.summary_other_check.setChecked(bool(data.get("summary_other", True)))
             self.static_skip_radio.setChecked(data.get("static_exist_action", "skip") != "overwrite")
             self.static_overwrite_radio.setChecked(data.get("static_exist_action", "skip") == "overwrite")
             self.convert_static_heic_check.setChecked(bool(data.get("convert_static_heic", True)))
-            self.do_summary_check.setChecked(bool(data.get("do_summary", False)))
             self.summary_trash_check.setChecked(bool(data.get("summary_trash", False)))
         finally:
             self._suspend_settings_save = False
@@ -1062,10 +1253,7 @@ class MainWindow(FramelessMainWindow):
         if not folder:
             return
         self.input_edit.setText(folder)
-        if not self.output_edit.text().strip():
-            self.output_edit.setText(str(Path(folder) / "LivePhotos_Output"))
-        else:
-            self.output_edit.setText(str(Path(folder) / "LivePhotos_Output"))
+        self.output_edit.setText(str(Path(folder) / "Summary_Output"))
         self._save_settings()
         self.scan_files()
 
@@ -1078,15 +1266,6 @@ class MainWindow(FramelessMainWindow):
         self._save_settings()
 
     def toggle_static_options(self):
-        state = self.copy_static_check.isChecked()
-        self.static_skip_radio.setEnabled(state)
-        self.static_overwrite_radio.setEnabled(state)
-        self.convert_static_heic_check.setEnabled(state)
-        self._save_settings()
-
-    def toggle_summary_options(self):
-        state = self.do_summary_check.isChecked()
-        self.summary_trash_check.setEnabled(state)
         self._save_settings()
 
     def clear_list(self):
@@ -1102,22 +1281,46 @@ class MainWindow(FramelessMainWindow):
             return
 
         recursive = self.include_subdirs_check.isChecked()
-        existing = {task["img_path"].resolve() for task in self.file_list}
-        img_files: list[tuple[Path, Path | None]] = []
+        existing = {task["path"].resolve() for task in self.file_list if task.get("path") is not None}
+        all_files: list[tuple[Path, Path | None]] = []
 
         for path in paths:
             if path.is_dir():
                 iterator = path.rglob("*") if recursive else path.glob("*")
-                img_files.extend((candidate, path) for candidate in iterator if _is_image_file(candidate))
-            elif _is_image_file(path):
-                img_files.append((path, path.parent))
+                all_files.extend((candidate, path) for candidate in iterator if candidate.is_file())
+            elif path.is_file():
+                all_files.append((path, path.parent))
+
+        paired_videos: set[Path] = set()
+        tasks: list[dict] = []
+        for file_path, base_dir in sorted(all_files, key=lambda item: str(item[0])):
+            if not _is_image_file(file_path):
+                continue
+            task = _make_task(file_path, base_dir)
+            if task["mp4_path"] is not None:
+                try:
+                    paired_videos.add(task["mp4_path"].resolve())
+                except Exception:
+                    paired_videos.add(task["mp4_path"])
+            tasks.append(task)
+
+        for file_path, base_dir in sorted(all_files, key=lambda item: str(item[0])):
+            if _is_image_file(file_path):
+                continue
+            try:
+                resolved = file_path.resolve()
+            except Exception:
+                resolved = file_path
+            if resolved in paired_videos:
+                continue
+            tasks.append(_make_file_task(file_path, base_dir))
 
         added = 0
-        for img_path, base_dir in sorted(img_files, key=lambda item: str(item[0])):
-            resolved = img_path.resolve()
+        for task in sorted(tasks, key=lambda item: str(item["rel_path"])):
+            resolved = task["path"].resolve()
             if resolved in existing:
                 continue
-            self._append_scan_row(_make_task(img_path, base_dir))
+            self._append_scan_row(task)
             existing.add(resolved)
             added += 1
 
@@ -1131,7 +1334,7 @@ class MainWindow(FramelessMainWindow):
                     first_dir = first_file.parent if first_file is not None else None
                 if first_dir is not None:
                     self.input_edit.setText(str(first_dir))
-                    self.output_edit.setText(str(first_dir / "LivePhotos_Output"))
+                    self.output_edit.setText(str(first_dir / "Summary_Output"))
                     self._save_settings()
         else:
             self._set_status_text("drop_no_new")
@@ -1169,7 +1372,7 @@ class MainWindow(FramelessMainWindow):
         row = self.table.rowCount()
         self.table.insertRow(row)
         self.table.setItem(row, 0, QTableWidgetItem(str(task["rel_path"])))
-        self.table.setItem(row, 1, QTableWidgetItem(self.tr(task["has_mp4_text"])))
+        self.table.setItem(row, 1, QTableWidgetItem(self._display_task_type(task)))
         self.table.setItem(row, 2, QTableWidgetItem(self._display_status(task["status"])))
         self.file_list.append(task)
 
@@ -1205,7 +1408,7 @@ class MainWindow(FramelessMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-        if self.do_summary_check.isChecked() and self.summary_trash_check.isChecked() and not HAS_SEND2TRASH:
+        if self.summary_trash_check.isChecked() and not HAS_SEND2TRASH:
             self._notify(
                 self.tr("missing_dependency_title"),
                 self.tr("missing_send2trash"),
@@ -1224,10 +1427,12 @@ class MainWindow(FramelessMainWindow):
         options = {
             "output_dir": output_dir,
             "live_exist_action": "skip" if self.live_skip_radio.isChecked() else "overwrite",
-            "copy_static": self.copy_static_check.isChecked(),
+            "summary_live": self.summary_live_check.isChecked(),
+            "summary_static": self.summary_static_check.isChecked(),
+            "summary_other": self.summary_other_check.isChecked(),
             "static_exist_action": "skip" if self.static_skip_radio.isChecked() else "overwrite",
+            "other_exist_action": "skip",
             "convert_static_heic": self.convert_static_heic_check.isChecked(),
-            "do_summary": self.do_summary_check.isChecked(),
             "summary_trash": self.summary_trash_check.isChecked(),
         }
 
@@ -1272,22 +1477,21 @@ class MainWindow(FramelessMainWindow):
             live_skip=result["live_exist_skip_count"],
             static_copy=result["static_copy_count"],
             static_skip=result["static_exist_skip_count"],
+            other_copy=result["other_copy_count"],
+            other_skip=result["other_exist_skip_count"],
             failed=result["fail_count"] + result["error_skip_count"],
         )
 
-        if result["did_summary"]:
-            msg += self.tr(
-                "summary_result",
-                success=result["summary_success"],
-                failed=result["summary_failed"],
-                path=result["summary_out_path"],
-            )
-            if result["summary_trash"]:
-                msg += self.tr("summary_trash_done")
-        else:
-            msg += self.tr("output_result", path=result["out_path"])
-            if result["copy_static"]:
-                msg += self.tr("static_output_result", path=result["static_out_path"])
+        msg += self.tr(
+            "summary_result",
+            success=result["summary_success"],
+            failed=result["summary_failed"],
+            path=result["summary_out_path"],
+        )
+        if result["summary_trash"]:
+            msg += self.tr("summary_trash_done")
+        msg += self.tr("output_result", path=result["out_path"])
+        msg += self.tr("static_output_result", path=result["static_out_path"])
 
         QMessageBox.information(self, self.tr("task_done_title"), msg)
         self._notify(self.tr("task_done_title"), self.tr("process_done_notice", count=result["success_count"]))

@@ -389,7 +389,7 @@ class MainWindow(FramelessMainWindow):
         row1.setSpacing(10)
         self.input_label = BodyLabel(self.tr("source_dir"), self)
         self.input_edit = LineEdit(self)
-        self.input_edit.setReadOnly(True)
+        self.input_edit.setReadOnly(False)
         self.input_edit.setPlaceholderText(self.tr("source_placeholder"))
         self.btn_input = PushButton(self.tr("choose_source"), self)
         self.btn_input.setIcon(_pick_icon("FOLDER", "FOLDER_ADD"))
@@ -402,7 +402,7 @@ class MainWindow(FramelessMainWindow):
         row2.setSpacing(10)
         self.output_label = BodyLabel(self.tr("output_dir"), self)
         self.output_edit = LineEdit(self)
-        self.output_edit.setReadOnly(True)
+        self.output_edit.setReadOnly(False)
         self.output_edit.setPlaceholderText(self.tr("output_placeholder"))
         self.btn_output = PushButton(self.tr("choose_output"), self)
         self.btn_output.setIcon(_pick_icon("SAVE", "DOWNLOAD"))
@@ -529,7 +529,8 @@ class MainWindow(FramelessMainWindow):
 
         outer.addWidget(header_card)
         outer.addWidget(path_card)
-        outer.addWidget(option_card)
+        if not self._embedded:
+            outer.addWidget(option_card)
         outer.addWidget(table_card, 1)
         outer.addWidget(action_card)
         outer.addWidget(foot_card)
@@ -537,6 +538,7 @@ class MainWindow(FramelessMainWindow):
         self._init_default_output_dir()
         self._load_settings()
         self._apply_language()
+        self._connect_settings_signals()
 
     def _set_blue_title_bar(self):
         self.setTitleBar(StandardTitleBar(self))
@@ -717,6 +719,18 @@ class MainWindow(FramelessMainWindow):
             )
         except Exception:
             pass
+
+    def _connect_settings_signals(self):
+        self.input_edit.editingFinished.connect(self._save_settings)
+        self.output_edit.editingFinished.connect(self._save_settings)
+        for widget in (
+            self.include_subdirs_check,
+            self.photo_skip_radio,
+            self.photo_overwrite_radio,
+            self.video_skip_radio,
+            self.video_overwrite_radio,
+        ):
+            widget.toggled.connect(lambda _checked=False: self._save_settings())
 
     def _load_settings(self):
         if not self._settings_path.exists():

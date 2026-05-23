@@ -357,7 +357,7 @@ class MainWindow(FramelessMainWindow):
         row2 = QHBoxLayout()
         row2.setSpacing(10)
         self.output_edit = LineEdit(self)
-        self.output_edit.setReadOnly(True)
+        self.output_edit.setReadOnly(False)
         self.output_edit.setPlaceholderText(self.tr("output_placeholder"))
         self.btn_output = PushButton(self.tr("choose_output"), self)
         self.btn_output.clicked.connect(self.choose_output)
@@ -534,9 +534,11 @@ class MainWindow(FramelessMainWindow):
 
         outer.addWidget(header_card)
         outer.addWidget(path_card)
-        outer.addWidget(option_card)
+        if not self._embedded:
+            outer.addWidget(option_card)
         outer.addWidget(table_card, 1)
-        outer.addWidget(output_card)
+        if not self._embedded:
+            outer.addWidget(output_card)
         outer.addWidget(action_card)
         outer.addWidget(foot_card)
         self._init_default_output_dir()
@@ -653,6 +655,7 @@ class MainWindow(FramelessMainWindow):
             self._suspend_settings_save = False
 
     def _connect_settings_signals(self):
+        self.output_edit.editingFinished.connect(self._save_settings)
         for widget in (
             self.scan_subdirs_check,
             self.skip_radio,

@@ -10,7 +10,17 @@ from qframelesswindow import FramelessMainWindow
 
 from PyQt6.QtCore import QParallelAnimationGroup, QPoint, QEasingCurve, QPropertyAnimation, Qt
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import (
+    QApplication,
+    QButtonGroup,
+    QFrame,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from main_gui import MainWindow as FlymeFixWindow
 from merge_live_photo_gui import MainWindow as MergeLivePhotoWindow
@@ -19,6 +29,8 @@ from split_huawei_live_photo_gui import MainWindow as SplitHuaweiWindow
 
 APP_TITLE = "AzureKiln Photo Tool"
 APP_NAME = "AzureKilnPhotoTool"
+APP_VERSION = "1.0.0"
+GITHUB_URL = "https://github.com/azurekiln2333/azurekiln-photo-tool"
 SUPPORTED_LANGUAGES = ("zh", "en")
 TRANSLATIONS = {
     "zh": {
@@ -27,8 +39,18 @@ TRANSLATIONS = {
         "flyme": "Flyme LivePhoto 修复",
         "settings": "设置",
         "settings_title": "设置",
-        "settings_subtitle": "统一管理工具语言与全局选项",
+        "settings_subtitle": "统一管理语言、低频选项和应用信息",
         "language": "界面语言",
+        "merge_settings": "LivePhoto 合并设置",
+        "split_settings": "华为 LivePhoto 分离设置",
+        "flyme_settings": "Flyme LivePhoto 修复设置",
+        "scan_settings": "扫描",
+        "exist_settings": "同名文件处理",
+        "output_settings": "输出内容",
+        "intermediate_settings": "中间产物",
+        "about": "关于",
+        "version": "版本",
+        "github": "GitHub",
     },
     "en": {
         "merge": "Merge LivePhoto",
@@ -36,8 +58,18 @@ TRANSLATIONS = {
         "flyme": "Fix Flyme LivePhoto",
         "settings": "Settings",
         "settings_title": "Settings",
-        "settings_subtitle": "Manage language and global options",
+        "settings_subtitle": "Manage language, low-frequency options, and app information",
         "language": "Language",
+        "merge_settings": "Merge LivePhoto Settings",
+        "split_settings": "Huawei LivePhoto Split Settings",
+        "flyme_settings": "Flyme LivePhoto Fix Settings",
+        "scan_settings": "Scan",
+        "exist_settings": "Existing files",
+        "output_settings": "Output content",
+        "intermediate_settings": "Intermediate artifacts",
+        "about": "About",
+        "version": "Version",
+        "github": "GitHub",
     },
 }
 
@@ -62,7 +94,8 @@ def _import_fluent():
 
     if module is None:
         raise ImportError(
-            "未安装 qfluentwidgets。请安装 PyQt6-Fluent-Widgets；如果要使用 Pro，请按官方文档安装 Pro 包。"
+            "qfluentwidgets is not installed. Install PyQt6-Fluent-Widgets; "
+            "if you need Pro, install the Pro package documented by the project."
         ) from last_exc
 
     return {
@@ -132,13 +165,27 @@ class EmbeddedPage(QWidget):
 
 
 class SettingsPage(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, feature_windows: list[FramelessMainWindow], parent=None):
         super().__init__(parent)
         self.setObjectName("settings")
+        self.feature_windows = feature_windows
+        self._button_groups: list[QButtonGroup] = []
+        self._labels: dict[str, list[BodyLabel]] = {}
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(16)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.viewport().setStyleSheet("background: transparent;")
+
+        content = QWidget(self.scroll_area)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(28, 28, 28, 28)
+        content_layout.setSpacing(16)
 
         self.title_label = SubtitleLabel(self)
         title_font = QFont("Microsoft YaHei", 16)
@@ -162,16 +209,126 @@ class SettingsPage(QWidget):
         card_layout.addStretch(1)
         card_layout.addWidget(self.language_combo)
 
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.subtitle_label)
-        layout.addWidget(self.language_card)
-        layout.addStretch(1)
+        content_layout.addWidget(self.title_label)
+        content_layout.addWidget(self.subtitle_label)
+        content_layout.addWidget(self.language_card)
+        self._build_feature_settings(content_layout)
+        self._build_about_card(content_layout)
+        content_layout.addStretch(1)
+
+        self.scroll_area.setWidget(content)
+        layout.addWidget(self.scroll_area)
+
+    def _new_card(self, key: str, parent_layout: QVBoxLayout) -> QVBoxLayout:
+        card = CardWidget(self)
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(18, 16, 18, 16)
+        card_layout.setSpacing(10)
+
+        title = BodyLabel(card)
+        title.setStyleSheet("font-weight: 600;")
+        self._labels.setdefault(key, []).append(title)
+        card_layout.addWidget(title)
+        parent_layout.addWidget(card)
+        return card_layout
+
+    def _section(self, layout: QVBoxLayout, key: str):
+        label = BodyLabel(self)
+        label.setStyleSheet("color: #667085; margin-top: 4px;")
+        self._labels.setdefault(key, []).append(label)
+        layout.addWidget(label)
+
+    def _row(self, layout: QVBoxLayout, *widgets: QWidget):
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        for widget in widgets:
+            row.addWidget(widget)
+            widget.show()
+        row.addStretch(1)
+        layout.addLayout(row)
+
+    def _group_radios(self, *buttons: QWidget):
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        for button in buttons:
+            if hasattr(button, "setAutoExclusive"):
+                button.setAutoExclusive(False)
+            group.addButton(button)
+        self._button_groups.append(group)
+
+    def _build_feature_settings(self, layout: QVBoxLayout):
+        merge, split, flyme = self.feature_windows
+
+        merge_layout = self._new_card("merge_settings", layout)
+        self._section(merge_layout, "scan_settings")
+        self._row(merge_layout, merge.include_subdirs_check)
+        self._section(merge_layout, "exist_settings")
+        self._group_radios(merge.live_skip_radio, merge.live_overwrite_radio)
+        self._row(merge_layout, merge.live_exists_label, merge.live_skip_radio, merge.live_overwrite_radio)
+        self._group_radios(merge.static_skip_radio, merge.static_overwrite_radio)
+        self._row(merge_layout, merge.static_exists_label, merge.static_skip_radio, merge.static_overwrite_radio)
+        self._row(merge_layout, merge.convert_static_heic_check)
+        self._section(merge_layout, "intermediate_settings")
+        self._row(merge_layout, merge.summary_trash_check)
+
+        split_layout = self._new_card("split_settings", layout)
+        self._section(split_layout, "scan_settings")
+        self._row(split_layout, split.include_subdirs_check)
+        self._section(split_layout, "exist_settings")
+        self._group_radios(split.photo_skip_radio, split.photo_overwrite_radio)
+        self._row(split_layout, split.photo_exists_label, split.photo_skip_radio, split.photo_overwrite_radio)
+        self._group_radios(split.video_skip_radio, split.video_overwrite_radio)
+        self._row(split_layout, split.video_exists_label, split.video_skip_radio, split.video_overwrite_radio)
+
+        flyme_layout = self._new_card("flyme_settings", layout)
+        self._section(flyme_layout, "scan_settings")
+        self._row(flyme_layout, flyme.scan_subdirs_check)
+        self._section(flyme_layout, "exist_settings")
+        self._group_radios(flyme.skip_radio, flyme.overwrite_radio)
+        self._row(flyme_layout, flyme.skip_radio, flyme.overwrite_radio)
+        self._section(flyme_layout, "output_settings")
+        self._row(
+            flyme_layout,
+            flyme.output_fixed_live_check,
+            flyme.output_static_check,
+            flyme.output_other_photo_check,
+            flyme.output_other_file_check,
+        )
+        flyme_layout.addWidget(flyme.output_settings_note)
+        flyme.output_settings_note.show()
+
+    def _build_about_card(self, layout: QVBoxLayout):
+        about_layout = self._new_card("about", layout)
+
+        version_row = QHBoxLayout()
+        version_row.setSpacing(12)
+        self.version_label = BodyLabel(self)
+        self.version_value = BodyLabel(APP_VERSION, self)
+        version_row.addWidget(self.version_label)
+        version_row.addStretch(1)
+        version_row.addWidget(self.version_value)
+        about_layout.addLayout(version_row)
+
+        github_row = QHBoxLayout()
+        github_row.setSpacing(12)
+        self.github_label = BodyLabel(self)
+        self.github_value = BodyLabel(GITHUB_URL, self)
+        self.github_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        github_row.addWidget(self.github_label)
+        github_row.addStretch(1)
+        github_row.addWidget(self.github_value)
+        about_layout.addLayout(github_row)
 
     def set_language(self, lang: str):
         text = TRANSLATIONS[lang]
         self.title_label.setText(text["settings_title"])
         self.subtitle_label.setText(text["settings_subtitle"])
         self.language_label.setText(text["language"])
+        self.version_label.setText(text["version"])
+        self.github_label.setText(text["github"])
+        for key, labels in self._labels.items():
+            for label in labels:
+                label.setText(text[key])
 
         self.language_combo.blockSignals(True)
         try:
@@ -207,7 +364,7 @@ class UnifiedMainWindow(FluentWindow):
             EmbeddedPage("split", self._feature_windows[1], self),
             EmbeddedPage("flyme", self._feature_windows[2], self),
         ]
-        self.settings_page = SettingsPage(self)
+        self.settings_page = SettingsPage(self._feature_windows, self)
 
         self.merge_item = self.addSubInterface(
             self.pages[0],
