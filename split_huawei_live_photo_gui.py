@@ -377,7 +377,8 @@ class MainWindow(FramelessMainWindow):
         header_layout.addWidget(self.title_label)
         header_layout.addWidget(self.subtitle_label)
         header_layout.addWidget(self.subtitle_note_label)
-        header_layout.addLayout(language_row)
+        if not self._embedded:
+            header_layout.addLayout(language_row)
 
         path_card = CardWidget(self)
         path_layout = QVBoxLayout(path_card)
@@ -410,7 +411,8 @@ class MainWindow(FramelessMainWindow):
         row2.addWidget(self.output_edit, 1)
         row2.addWidget(self.btn_output)
 
-        path_layout.addLayout(row1)
+        if not self._embedded:
+            path_layout.addLayout(row1)
         path_layout.addLayout(row2)
 
         option_card = CardWidget(self)

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import sys
+from pathlib import Path
 
 from qframelesswindow import FramelessMainWindow
 
 from PyQt6.QtCore import QParallelAnimationGroup, QPoint, QEasingCurve, QPropertyAnimation, Qt
 from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import QApplication, QGraphicsOpacityEffect, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from main_gui import MainWindow as FlymeFixWindow
 from merge_live_photo_gui import MainWindow as MergeLivePhotoWindow
@@ -15,6 +18,28 @@ from split_huawei_live_photo_gui import MainWindow as SplitHuaweiWindow
 
 
 APP_TITLE = "AzureKiln Photo Tool"
+APP_NAME = "AzureKilnPhotoTool"
+SUPPORTED_LANGUAGES = ("zh", "en")
+TRANSLATIONS = {
+    "zh": {
+        "merge": "LivePhoto 合并",
+        "split": "华为 LivePhoto 分离",
+        "flyme": "Flyme LivePhoto 修复",
+        "settings": "设置",
+        "settings_title": "设置",
+        "settings_subtitle": "统一管理工具语言与全局选项",
+        "language": "界面语言",
+    },
+    "en": {
+        "merge": "Merge LivePhoto",
+        "split": "Split Huawei LivePhoto",
+        "flyme": "Fix Flyme LivePhoto",
+        "settings": "Settings",
+        "settings_title": "Settings",
+        "settings_subtitle": "Manage language and global options",
+        "language": "Language",
+    },
+}
 
 
 def _import_fluent():
@@ -41,9 +66,13 @@ def _import_fluent():
         ) from last_exc
 
     return {
+        "BodyLabel": module.BodyLabel,
+        "CardWidget": module.CardWidget,
+        "ComboBox": module.ComboBox,
         "FluentIcon": module.FluentIcon,
         "FluentWindow": module.FluentWindow,
         "NavigationItemPosition": module.NavigationItemPosition,
+        "SubtitleLabel": module.SubtitleLabel,
         "Theme": module.Theme,
         "setTheme": module.setTheme,
         "setThemeColor": module.setThemeColor,
@@ -52,9 +81,13 @@ def _import_fluent():
 
 
 FW = _import_fluent()
+BodyLabel = FW["BodyLabel"]
+CardWidget = FW["CardWidget"]
+ComboBox = FW["ComboBox"]
 FluentIcon = FW["FluentIcon"]
 FluentWindow = FW["FluentWindow"]
 NavigationItemPosition = FW["NavigationItemPosition"]
+SubtitleLabel = FW["SubtitleLabel"]
 Theme = FW["Theme"]
 setTheme = FW["setTheme"]
 setThemeColor = FW["setThemeColor"]
@@ -67,6 +100,14 @@ def _pick_icon(*names: str):
         if icon is not None:
             return icon
     return FluentIcon.APPLICATION
+
+
+def _get_settings_path() -> Path:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / APP_NAME / "settings.json"
+    return Path.home() / ".config" / APP_NAME / "settings.json"
 
 
 class EmbeddedPage(QWidget):
@@ -90,6 +131,58 @@ class EmbeddedPage(QWidget):
         layout.addWidget(content)
 
 
+class SettingsPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("settings")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setSpacing(16)
+
+        self.title_label = SubtitleLabel(self)
+        title_font = QFont("Microsoft YaHei", 16)
+        title_font.setBold(True)
+        self.title_label.setFont(title_font)
+        self.subtitle_label = BodyLabel(self)
+        self.subtitle_label.setStyleSheet("color: #667085;")
+
+        self.language_card = CardWidget(self)
+        card_layout = QHBoxLayout(self.language_card)
+        card_layout.setContentsMargins(18, 16, 18, 16)
+        card_layout.setSpacing(12)
+
+        self.language_label = BodyLabel(self.language_card)
+        self.language_combo = ComboBox(self.language_card)
+        self.language_combo.addItem("中文", userData="zh")
+        self.language_combo.addItem("English", userData="en")
+        self.language_combo.setFixedWidth(180)
+
+        card_layout.addWidget(self.language_label)
+        card_layout.addStretch(1)
+        card_layout.addWidget(self.language_combo)
+
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.subtitle_label)
+        layout.addWidget(self.language_card)
+        layout.addStretch(1)
+
+    def set_language(self, lang: str):
+        text = TRANSLATIONS[lang]
+        self.title_label.setText(text["settings_title"])
+        self.subtitle_label.setText(text["settings_subtitle"])
+        self.language_label.setText(text["language"])
+
+        self.language_combo.blockSignals(True)
+        try:
+            for idx in range(self.language_combo.count()):
+                if self.language_combo.itemData(idx) == lang:
+                    self.language_combo.setCurrentIndex(idx)
+                    break
+        finally:
+            self.language_combo.blockSignals(False)
+
+
 class UnifiedMainWindow(FluentWindow):
     def __init__(self):
         super().__init__()
@@ -101,6 +194,8 @@ class UnifiedMainWindow(FluentWindow):
         self._incoming_effect: QGraphicsOpacityEffect | None = None
         self._incoming_page: QWidget | None = None
         self._incoming_origin = QPoint()
+        self._settings_path = _get_settings_path()
+        self.lang = self._load_global_language()
 
         self._feature_windows = [
             MergeLivePhotoWindow(self, embedded=True),
@@ -112,25 +207,34 @@ class UnifiedMainWindow(FluentWindow):
             EmbeddedPage("split", self._feature_windows[1], self),
             EmbeddedPage("flyme", self._feature_windows[2], self),
         ]
+        self.settings_page = SettingsPage(self)
 
         self.merge_item = self.addSubInterface(
             self.pages[0],
             _pick_icon("ADD_TO", "SAVE_COPY", "LINK"),
-            "LivePhoto 合并",
+            TRANSLATIONS[self.lang]["merge"],
             NavigationItemPosition.TOP,
         )
         self.split_item = self.addSubInterface(
             self.pages[1],
             _pick_icon("CUT", "IMAGE_EXPORT", "FOLDER"),
-            "华为 LivePhoto 分离",
+            TRANSLATIONS[self.lang]["split"],
             NavigationItemPosition.TOP,
         )
         self.flyme_item = self.addSubInterface(
             self.pages[2],
             _pick_icon("DEVELOPER_TOOLS", "SYNC", "UPDATE"),
-            "Flyme LivePhoto 修复",
+            TRANSLATIONS[self.lang]["flyme"],
             NavigationItemPosition.TOP,
         )
+        self.settings_item = self.addSubInterface(
+            self.settings_page,
+            _pick_icon("SETTING", "DEVELOPER_TOOLS"),
+            TRANSLATIONS[self.lang]["settings"],
+            NavigationItemPosition.BOTTOM,
+        )
+        self.settings_page.language_combo.currentIndexChanged.connect(self._on_language_changed)
+        self.apply_language(self.lang, save=False)
         self._tune_animations()
 
     def switchTo(self, interface: QWidget):
@@ -201,6 +305,71 @@ class UnifiedMainWindow(FluentWindow):
     def _tune_animations(self):
         self.navigationInterface.panel.setIndicatorAnimationEnabled(False)
         self.stackedWidget.setAnimationEnabled(False)
+
+    def _load_global_language(self) -> str:
+        if not self._settings_path.exists():
+            return "zh"
+        try:
+            data = json.loads(self._settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            return "zh"
+        lang = data.get("language")
+        return lang if lang in SUPPORTED_LANGUAGES else "zh"
+
+    def _save_global_settings(self):
+        try:
+            self._settings_path.parent.mkdir(parents=True, exist_ok=True)
+            self._settings_path.write_text(
+                json.dumps({"language": self.lang}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _on_language_changed(self, _index: int):
+        lang = self.settings_page.language_combo.currentData()
+        if lang in SUPPORTED_LANGUAGES:
+            self.apply_language(lang)
+
+    def apply_language(self, lang: str, save: bool = True):
+        if lang not in SUPPORTED_LANGUAGES:
+            return
+
+        self.lang = lang
+        text = TRANSLATIONS[lang]
+        self.merge_item.setText(text["merge"])
+        self.merge_item.setToolTip(text["merge"])
+        self.split_item.setText(text["split"])
+        self.split_item.setToolTip(text["split"])
+        self.flyme_item.setText(text["flyme"])
+        self.flyme_item.setToolTip(text["flyme"])
+        self.settings_item.setText(text["settings"])
+        self.settings_item.setToolTip(text["settings"])
+        self.settings_page.set_language(lang)
+
+        for feature_window in self._feature_windows:
+            self._apply_feature_language(feature_window, lang)
+
+        if save:
+            self._save_global_settings()
+
+    def _apply_feature_language(self, feature_window: FramelessMainWindow, lang: str):
+        if hasattr(feature_window, "lang"):
+            feature_window.lang = lang
+        combo = getattr(feature_window, "language_combo", None)
+        if combo is not None:
+            combo.blockSignals(True)
+            try:
+                for idx in range(combo.count()):
+                    if combo.itemData(idx) == lang:
+                        combo.setCurrentIndex(idx)
+                        break
+            finally:
+                combo.blockSignals(False)
+
+        apply_language = getattr(feature_window, "_apply_language", None)
+        if callable(apply_language):
+            apply_language()
 
     def _clear_transition(self):
         if self._transition_group is not None:
