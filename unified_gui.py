@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from qframelesswindow import FramelessMainWindow
 
@@ -178,7 +179,7 @@ class SettingsPage(QWidget):
         self.setObjectName("settings")
         self.feature_windows = feature_windows
         self._button_groups: list[QButtonGroup] = []
-        self._labels: dict[str, list[BodyLabel]] = {}
+        self._labels: dict[str, list[Any]] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
