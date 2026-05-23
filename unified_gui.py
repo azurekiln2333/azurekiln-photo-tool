@@ -8,8 +8,8 @@ from pathlib import Path
 
 from qframelesswindow import FramelessMainWindow
 
-from PyQt6.QtCore import QParallelAnimationGroup, QPoint, QEasingCurve, QPropertyAnimation, Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QParallelAnimationGroup, QPoint, QEasingCurve, QPropertyAnimation, Qt, QUrl
+from PyQt6.QtGui import QDesktopServices, QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -38,8 +38,11 @@ TRANSLATIONS = {
         "split": "华为 LivePhoto 分离",
         "flyme": "Flyme LivePhoto 修复",
         "settings": "设置",
+        "about": "关于",
         "settings_title": "设置",
-        "settings_subtitle": "统一管理语言、低频选项和应用信息",
+        "settings_subtitle": "统一管理语言和低频选项",
+        "about_title": "关于",
+        "about_subtitle": "应用版本和项目地址",
         "language": "界面语言",
         "merge_settings": "LivePhoto 合并设置",
         "split_settings": "华为 LivePhoto 分离设置",
@@ -48,17 +51,20 @@ TRANSLATIONS = {
         "exist_settings": "同名文件处理",
         "output_settings": "输出内容",
         "intermediate_settings": "中间产物",
-        "about": "关于",
         "version": "版本",
         "github": "GitHub",
+        "open_github": "打开 GitHub",
     },
     "en": {
         "merge": "Merge LivePhoto",
         "split": "Split Huawei LivePhoto",
         "flyme": "Fix Flyme LivePhoto",
         "settings": "Settings",
+        "about": "About",
         "settings_title": "Settings",
-        "settings_subtitle": "Manage language, low-frequency options, and app information",
+        "settings_subtitle": "Manage language and low-frequency options",
+        "about_title": "About",
+        "about_subtitle": "App version and project repository",
         "language": "Language",
         "merge_settings": "Merge LivePhoto Settings",
         "split_settings": "Huawei LivePhoto Split Settings",
@@ -67,9 +73,9 @@ TRANSLATIONS = {
         "exist_settings": "Existing files",
         "output_settings": "Output content",
         "intermediate_settings": "Intermediate artifacts",
-        "about": "About",
         "version": "Version",
         "github": "GitHub",
+        "open_github": "Open GitHub",
     },
 }
 
@@ -105,6 +111,7 @@ def _import_fluent():
         "FluentIcon": module.FluentIcon,
         "FluentWindow": module.FluentWindow,
         "NavigationItemPosition": module.NavigationItemPosition,
+        "PushButton": module.PushButton,
         "SubtitleLabel": module.SubtitleLabel,
         "Theme": module.Theme,
         "setTheme": module.setTheme,
@@ -120,6 +127,7 @@ ComboBox = FW["ComboBox"]
 FluentIcon = FW["FluentIcon"]
 FluentWindow = FW["FluentWindow"]
 NavigationItemPosition = FW["NavigationItemPosition"]
+PushButton = FW["PushButton"]
 SubtitleLabel = FW["SubtitleLabel"]
 Theme = FW["Theme"]
 setTheme = FW["setTheme"]
@@ -213,7 +221,6 @@ class SettingsPage(QWidget):
         content_layout.addWidget(self.subtitle_label)
         content_layout.addWidget(self.language_card)
         self._build_feature_settings(content_layout)
-        self._build_about_card(content_layout)
         content_layout.addStretch(1)
 
         self.scroll_area.setWidget(content)
@@ -297,35 +304,11 @@ class SettingsPage(QWidget):
         flyme_layout.addWidget(flyme.output_settings_note)
         flyme.output_settings_note.show()
 
-    def _build_about_card(self, layout: QVBoxLayout):
-        about_layout = self._new_card("about", layout)
-
-        version_row = QHBoxLayout()
-        version_row.setSpacing(12)
-        self.version_label = BodyLabel(self)
-        self.version_value = BodyLabel(APP_VERSION, self)
-        version_row.addWidget(self.version_label)
-        version_row.addStretch(1)
-        version_row.addWidget(self.version_value)
-        about_layout.addLayout(version_row)
-
-        github_row = QHBoxLayout()
-        github_row.setSpacing(12)
-        self.github_label = BodyLabel(self)
-        self.github_value = BodyLabel(GITHUB_URL, self)
-        self.github_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        github_row.addWidget(self.github_label)
-        github_row.addStretch(1)
-        github_row.addWidget(self.github_value)
-        about_layout.addLayout(github_row)
-
     def set_language(self, lang: str):
         text = TRANSLATIONS[lang]
         self.title_label.setText(text["settings_title"])
         self.subtitle_label.setText(text["settings_subtitle"])
         self.language_label.setText(text["language"])
-        self.version_label.setText(text["version"])
-        self.github_label.setText(text["github"])
         for key, labels in self._labels.items():
             for label in labels:
                 label.setText(text[key])
@@ -338,6 +321,66 @@ class SettingsPage(QWidget):
                     break
         finally:
             self.language_combo.blockSignals(False)
+
+
+class AboutPage(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("about")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setSpacing(16)
+
+        self.title_label = SubtitleLabel(self)
+        title_font = QFont("Microsoft YaHei", 16)
+        title_font.setBold(True)
+        self.title_label.setFont(title_font)
+        self.subtitle_label = BodyLabel(self)
+        self.subtitle_label.setStyleSheet("color: #667085;")
+
+        self.version_card = CardWidget(self)
+        version_layout = QVBoxLayout(self.version_card)
+        version_layout.setContentsMargins(18, 16, 18, 16)
+        version_layout.setSpacing(8)
+        self.version_label = BodyLabel(self.version_card)
+        self.version_label.setStyleSheet("font-weight: 600;")
+        self.version_value = BodyLabel(APP_VERSION, self.version_card)
+        version_layout.addWidget(self.version_label)
+        version_layout.addWidget(self.version_value)
+
+        self.github_card = CardWidget(self)
+        github_layout = QVBoxLayout(self.github_card)
+        github_layout.setContentsMargins(18, 16, 18, 16)
+        github_layout.setSpacing(10)
+        self.github_label = BodyLabel(self.github_card)
+        self.github_label.setStyleSheet("font-weight: 600;")
+        self.github_value = BodyLabel(GITHUB_URL, self.github_card)
+        self.github_value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.github_button = PushButton(self.github_card)
+        self.github_button.setIcon(_pick_icon("LINK", "GLOBE", "SEND"))
+        self.github_button.setFixedWidth(160)
+        self.github_button.clicked.connect(self.open_github)
+        github_layout.addWidget(self.github_label)
+        github_layout.addWidget(self.github_value)
+        github_layout.addWidget(self.github_button, 0, Qt.AlignmentFlag.AlignLeft)
+
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.subtitle_label)
+        layout.addWidget(self.version_card)
+        layout.addWidget(self.github_card)
+        layout.addStretch(1)
+
+    def set_language(self, lang: str):
+        text = TRANSLATIONS[lang]
+        self.title_label.setText(text["about_title"])
+        self.subtitle_label.setText(text["about_subtitle"])
+        self.version_label.setText(text["version"])
+        self.github_label.setText(text["github"])
+        self.github_button.setText(text["open_github"])
+
+    def open_github(self):
+        QDesktopServices.openUrl(QUrl(GITHUB_URL))
 
 
 class UnifiedMainWindow(FluentWindow):
@@ -364,6 +407,7 @@ class UnifiedMainWindow(FluentWindow):
             EmbeddedPage("split", self._feature_windows[1], self),
             EmbeddedPage("flyme", self._feature_windows[2], self),
         ]
+        self.about_page = AboutPage(self)
         self.settings_page = SettingsPage(self._feature_windows, self)
 
         self.merge_item = self.addSubInterface(
@@ -383,6 +427,12 @@ class UnifiedMainWindow(FluentWindow):
             _pick_icon("DEVELOPER_TOOLS", "SYNC", "UPDATE"),
             TRANSLATIONS[self.lang]["flyme"],
             NavigationItemPosition.TOP,
+        )
+        self.about_item = self.addSubInterface(
+            self.about_page,
+            _pick_icon("INFO", "HELP", "APPLICATION"),
+            TRANSLATIONS[self.lang]["about"],
+            NavigationItemPosition.BOTTOM,
         )
         self.settings_item = self.addSubInterface(
             self.settings_page,
@@ -500,8 +550,11 @@ class UnifiedMainWindow(FluentWindow):
         self.split_item.setToolTip(text["split"])
         self.flyme_item.setText(text["flyme"])
         self.flyme_item.setToolTip(text["flyme"])
+        self.about_item.setText(text["about"])
+        self.about_item.setToolTip(text["about"])
         self.settings_item.setText(text["settings"])
         self.settings_item.setToolTip(text["settings"])
+        self.about_page.set_language(lang)
         self.settings_page.set_language(lang)
 
         for feature_window in self._feature_windows:
