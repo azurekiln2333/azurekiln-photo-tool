@@ -188,7 +188,7 @@ class SettingsPage(QWidget):
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setProperty("horizontalScrollBarPolicy", Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll_area.viewport().setStyleSheet("background: transparent;")
 
         content = QWidget(self.scroll_area)
