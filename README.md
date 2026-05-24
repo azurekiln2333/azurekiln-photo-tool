@@ -93,9 +93,13 @@ ExifTool 查找顺序：
 
 ```text
 vendor/exiftool/exiftool.exe
+vendor/exiftool/exiftool
 exiftool/exiftool.exe
+exiftool/exiftool
 bin/exiftool.exe
-系统 PATH
+bin/exiftool
+EXIFTOOL_PATH
+系统 PATH 中的 exiftool
 ```
 
 ## 使用说明

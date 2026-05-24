@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AzureKiln Photo Tool Web</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="app">
+      <aside class="sidebar" aria-label="功能">
+        <div class="brand">
+          <div class="brand-mark">AK</div>
+          <div>
+            <h1>AzureKiln Photo Tool</h1>
+            <p>Web 本地版</p>
+          </div>
+        </div>
+        <nav class="tabs" aria-label="工具切换">
+          <button class="tab is-active" data-mode="merge" type="button">
+            <span class="tab-icon">+</span>
+            <span>LivePhoto 合并</span>
+          </button>
+          <button class="tab" data-mode="split" type="button">
+            <span class="tab-icon">↔</span>
+            <span>华为 LivePhoto 拆分</span>
+          </button>
+          <button class="tab" data-mode="flyme" type="button">
+            <span class="tab-icon">✓</span>
+            <span>Flyme 修复</span>
+          </button>
+        </nav>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">本机浏览器处理工作台</p>
+            <h2 id="modeTitle">LivePhoto 合并</h2>
+          </div>
+          <a class="ghost-link" href="/static/README.md" target="_blank" rel="noreferrer">说明</a>
+        </header>
+
+        <section class="tool-panel">
+          <div class="drop-zone" id="dropZone">
+            <input id="fileInput" name="files" type="file" multiple>
+            <div class="drop-copy">
+              <strong>选择文件或拖放到这里</strong>
+              <span id="dropHint">上传同名 JPG/JPEG 与 MP4/MOV 文件，后端会合并成 Motion Photo。</span>
+            </div>
+            <button class="secondary" id="browseButton" type="button">选择文件</button>
+          </div>
+
+          <div class="options" id="options">
+            <label class="check-row" data-option="copy_static">
+              <input type="checkbox" id="copyStatic">
+              <span>合并时复制未配对的静态照片</span>
+            </label>
+            <label class="check-row is-hidden" data-option="copy_non_live">
+              <input type="checkbox" id="copyNonLive">
+              <span>拆分时复制非华为 LivePhoto 照片</span>
+            </label>
+            <label class="check-row is-hidden" data-option="copy_unchanged">
+              <input type="checkbox" id="copyUnchanged" checked>
+              <span>Flyme 修复时复制无需处理的照片</span>
+            </label>
+          </div>
+
+          <div class="file-list-wrap">
+            <div class="list-head">
+              <span id="fileCount">未选择文件</span>
+              <button class="text-button" id="clearButton" type="button">清空</button>
+            </div>
+            <ul class="file-list" id="fileList" aria-live="polite"></ul>
+          </div>
+
+          <div class="actions">
+            <button class="primary" id="processButton" type="button" disabled>开始处理</button>
+            <a class="download is-hidden" id="downloadButton" href="#">下载结果 ZIP</a>
+          </div>
+        </section>
+
+        <section class="result-panel" aria-live="polite">
+          <div class="status-line">
+            <strong id="statusText">等待文件</strong>
+            <span id="zipText"></span>
+          </div>
+          <pre id="logOutput"></pre>
+        </section>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -81,21 +81,30 @@ class LivePhotoFixTool:
         return startupinfo
 
     def _get_exiftool_path(self) -> str:
+        env_path = os.environ.get('EXIFTOOL_PATH')
+        if env_path and os.path.exists(env_path):
+            return env_path
+
         if hasattr(sys, '_MEIPASS'):
-            bundle_path = os.path.join(sys._MEIPASS, 'exiftool.exe')
-            if os.path.exists(bundle_path):
-                return bundle_path
-            # Some Windows exiftool builds are a launcher depending on exiftool_files.
-            # Keep a fallback search under a bundled exiftool folder.
-            bundle_path2 = os.path.join(sys._MEIPASS, 'exiftool', 'exiftool.exe')
-            if os.path.exists(bundle_path2):
-                return bundle_path2
+            bundle_candidates = (
+                os.path.join(sys._MEIPASS, 'exiftool.exe'),
+                os.path.join(sys._MEIPASS, 'exiftool'),
+                os.path.join(sys._MEIPASS, 'exiftool', 'exiftool.exe'),
+                os.path.join(sys._MEIPASS, 'exiftool', 'exiftool'),
+            )
+            for bundle_path in bundle_candidates:
+                if os.path.exists(bundle_path):
+                    return bundle_path
+
         # Prefer repository-bundled exiftool first to avoid unexpected system version differences.
         base_dir = os.path.dirname(os.path.abspath(__file__))
         candidates = (
             os.path.join(base_dir, 'vendor', 'exiftool', 'exiftool.exe'),
+            os.path.join(base_dir, 'vendor', 'exiftool', 'exiftool'),
             os.path.join(base_dir, 'exiftool', 'exiftool.exe'),
+            os.path.join(base_dir, 'exiftool', 'exiftool'),
             os.path.join(base_dir, 'bin', 'exiftool.exe'),
+            os.path.join(base_dir, 'bin', 'exiftool'),
         )
         for local_path in candidates:
             if os.path.exists(local_path):
@@ -120,7 +129,9 @@ class LivePhotoFixTool:
                 startupinfo=self._startupinfo(),
             )
         except Exception:
-            raise FileNotFoundError("未找到 exiftool！请确保 exiftool.exe 在当前目录或已添加到系统环境变量。")
+            raise FileNotFoundError(
+                "未找到 exiftool！请确保 exiftool/exiftool.exe 在当前目录、EXIFTOOL_PATH 或系统 PATH 中。"
+            )
 
     def fix_photo(self, input_path: Path, output_path: Path = None) -> tuple[bool, str]:
         try:
