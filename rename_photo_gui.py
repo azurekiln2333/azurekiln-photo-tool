@@ -41,10 +41,10 @@ from timestamp_fix_gui import (
     SubtitleLabel,
     TableWidget,
     Theme,
+    _earliest_file_timestamp,
     _format_timestamp,
     _get_windows_pictures_dir,
     _safe_resolve,
-    _earliest_file_timestamp,
     _timestamp_from_exif,
     _timestamp_from_filename,
     _timestamp_from_windows_shell,
@@ -59,27 +59,42 @@ TRANSLATIONS = {
     "zh": {
         "app_title": "照片重命名",
         "header_title": "照片重命名",
-        "header_subtitle": "读取拍摄时间，并按 IMG_年月日_时分秒 的格式重命名原文件",
-        "header_note": "优先使用媒体拍摄时间；没有拍摄时间时，使用文件名时间或文件现有最早时间。",
+        "header_subtitle": "左侧读取原始文件时间，右侧按匹配到的文件名重命名待处理照片",
+        "header_note": "匹配优先使用相对路径，其次使用文件名；未匹配时可选择是否允许使用待重命名文件自身时间。",
         "language": "界面语言",
-        "source_dir": "源目录",
-        "source_placeholder": "选择或拖入需要重命名的照片目录",
-        "choose_source": "选择源目录",
+        "reference_dir": "原始文件目录",
+        "target_dir": "待重命名目录",
+        "reference_placeholder": "选择或拖入用于读取时间信息的原始照片目录",
+        "target_placeholder": "选择或拖入实际需要重命名的照片目录",
+        "choose_reference": "选择原始目录",
+        "choose_target": "选择待重命名目录",
         "scan_subdirs": "扫描子目录",
-        "table_file": "当前相对路径",
-        "table_shot_time": "采集时间",
-        "table_target": "目标文件名",
-        "table_source": "来源",
+        "require_reference_match": "必须匹配原始文件",
+        "reference_drop_hint": "原始文件区：拖入保留正确时间信息的照片或文件夹，只读取信息，不改名。",
+        "target_drop_hint": "待重命名区：拖入需要改名的照片或文件夹，按匹配到的原始文件时间生成 IMG_年月日_时分秒。",
+        "table_reference_file": "原始文件",
+        "table_reference_time": "读取时间",
+        "table_reference_source": "来源",
+        "table_target_file": "待重命名文件",
+        "table_match": "匹配来源",
+        "table_target_time": "采用时间",
+        "table_target_name": "目标文件名",
         "table_status": "状态",
-        "drop_hint": "拖入照片或文件夹后预览目标文件名；重命名会直接修改原文件名，同名自动追加序号。",
-        "rescan": "重新扫描",
+        "scan_reference": "扫描原始文件",
+        "scan_target": "扫描待重命名",
+        "rescan": "重新扫描全部",
         "clear_list": "清空列表",
         "start_rename": "开始重命名",
-        "waiting_source": "等待选择或拖入文件",
-        "scanning": "正在扫描文件",
-        "scan_none_status": "未找到可重命名文件",
-        "scan_done_status": "共扫描到 {count} 个文件，准备就绪",
-        "drop_added": "已拖拽添加 {added} 个文件，当前共 {count} 项",
+        "waiting_source": "等待放入原始文件和待重命名文件",
+        "scanning_reference": "正在扫描原始文件",
+        "scanning_target": "正在扫描待重命名文件",
+        "scan_reference_none_status": "未找到原始照片",
+        "scan_target_none_status": "未找到待重命名照片",
+        "scan_reference_done_status": "已读取 {count} 个原始文件",
+        "scan_target_done_status": "已读取 {count} 个待重命名文件",
+        "scan_done_status": "原始文件 {reference} 个，待重命名 {target} 个",
+        "reference_drop_added": "原始文件已添加 {added} 个，当前共 {count} 项",
+        "target_drop_added": "待重命名文件已添加 {added} 个，当前共 {count} 项",
         "drop_no_new": "未添加新的文件",
         "list_cleared": "列表已清空",
         "preparing": "准备重命名",
@@ -89,18 +104,21 @@ TRANSLATIONS = {
         "status_renaming": "正在重命名",
         "status_renamed": "已重命名",
         "status_already_named": "文件名已符合规则",
+        "status_no_reference_match": "未匹配原始文件",
         "status_skipped": "已跳过",
         "status_failed": "失败：{error}",
         "source_exif": "拍摄时间",
         "source_filename": "文件名时间",
         "source_earliest": "文件现有最早时间",
+        "source_reference": "原始文件匹配",
         "source_unknown": "未知",
-        "yes": "是",
-        "no": "否",
+        "match_self": "使用自身时间",
+        "match_none": "-",
         "invalid_folder_title": "目录无效",
-        "invalid_folder_content": "请选择有效的源目录。",
+        "invalid_reference_content": "请选择有效的原始文件目录。",
+        "invalid_target_content": "请选择有效的待重命名目录。",
         "cannot_start_title": "无法开始",
-        "cannot_start_content": "请先添加需要重命名的文件。",
+        "cannot_start_content": "请先添加待重命名文件。",
         "task_done_title": "处理完成",
         "task_done_message": "照片重命名完成。\n\n成功: {success}\n失败: {failed}\n跳过: {skipped}",
         "process_done_notice": "已重命名 {count} 个文件",
@@ -109,27 +127,42 @@ TRANSLATIONS = {
     "en": {
         "app_title": "Rename Photos",
         "header_title": "Rename Photos",
-        "header_subtitle": "Read capture time and rename originals as IMG_yyyyMMdd_HHmmss",
-        "header_note": "Media capture time is preferred; filename time or the earliest existing file time is used as fallback.",
+        "header_subtitle": "Read original files on the left, then rename matched target photos on the right",
+        "header_note": "Matching prefers relative paths, then filenames. Unmatched targets can optionally fall back to their own time.",
         "language": "Language",
-        "source_dir": "Source folder",
-        "source_placeholder": "Choose or drop a folder containing photos to rename",
-        "choose_source": "Choose source",
+        "reference_dir": "Original folder",
+        "target_dir": "Target folder",
+        "reference_placeholder": "Choose or drop original photos used as the timestamp reference",
+        "target_placeholder": "Choose or drop photos that should be renamed",
+        "choose_reference": "Choose originals",
+        "choose_target": "Choose targets",
         "scan_subdirs": "Scan subfolders",
-        "table_file": "Current relative path",
-        "table_shot_time": "Detected time",
-        "table_target": "Target filename",
-        "table_source": "Source",
+        "require_reference_match": "Require original match",
+        "reference_drop_hint": "Original area: drop photos or folders with correct timestamps. These files are only read.",
+        "target_drop_hint": "Target area: drop photos or folders to rename as IMG_yyyyMMdd_HHmmss from matched originals.",
+        "table_reference_file": "Original file",
+        "table_reference_time": "Read time",
+        "table_reference_source": "Source",
+        "table_target_file": "Target file",
+        "table_match": "Match",
+        "table_target_time": "Applied time",
+        "table_target_name": "Target filename",
         "table_status": "Status",
-        "drop_hint": "Drop photos or folders to preview target names. Renaming modifies original filenames in place.",
-        "rescan": "Rescan",
+        "scan_reference": "Scan originals",
+        "scan_target": "Scan targets",
+        "rescan": "Rescan all",
         "clear_list": "Clear list",
         "start_rename": "Rename files",
-        "waiting_source": "Waiting for files",
-        "scanning": "Scanning files",
-        "scan_none_status": "No renameable files found",
-        "scan_done_status": "Scanned {count} file(s), ready",
-        "drop_added": "Dropped {added} file(s), total {count}",
+        "waiting_source": "Waiting for original and target files",
+        "scanning_reference": "Scanning originals",
+        "scanning_target": "Scanning targets",
+        "scan_reference_none_status": "No original photos found",
+        "scan_target_none_status": "No target photos found",
+        "scan_reference_done_status": "Read {count} original file(s)",
+        "scan_target_done_status": "Read {count} target file(s)",
+        "scan_done_status": "{reference} original(s), {target} target(s)",
+        "reference_drop_added": "Added {added} original file(s), total {count}",
+        "target_drop_added": "Added {added} target file(s), total {count}",
         "drop_no_new": "No new files were added",
         "list_cleared": "List cleared",
         "preparing": "Preparing rename",
@@ -139,18 +172,21 @@ TRANSLATIONS = {
         "status_renaming": "Renaming",
         "status_renamed": "Renamed",
         "status_already_named": "Already named",
+        "status_no_reference_match": "No original match",
         "status_skipped": "Skipped",
         "status_failed": "Failed: {error}",
         "source_exif": "Capture time",
         "source_filename": "Filename time",
         "source_earliest": "Earliest existing file time",
+        "source_reference": "Original match",
         "source_unknown": "Unknown",
-        "yes": "Yes",
-        "no": "No",
+        "match_self": "Own timestamp",
+        "match_none": "-",
         "invalid_folder_title": "Invalid folder",
-        "invalid_folder_content": "Choose a valid source folder.",
+        "invalid_reference_content": "Choose a valid original folder.",
+        "invalid_target_content": "Choose a valid target folder.",
         "cannot_start_title": "Cannot start",
-        "cannot_start_content": "Add files to rename first.",
+        "cannot_start_content": "Add target files to rename first.",
         "task_done_title": "Task complete",
         "task_done_message": "Photo rename complete.\n\nRenamed: {success}\nFailed: {failed}\nSkipped: {skipped}",
         "process_done_notice": "Renamed {count} file(s)",
@@ -160,15 +196,34 @@ TRANSLATIONS = {
 
 
 @dataclass
-class RenameItem:
+class ReferenceItem:
     path: Path
     source_root: Path | None
     rel_path: Path
     timestamp: float | None
     source: str
+
+
+@dataclass
+class RenameItem:
+    path: Path
+    source_root: Path | None
+    rel_path: Path
+    own_timestamp: float | None
+    own_source: str
+    timestamp: float | None = None
+    source: str = "source_unknown"
+    match_mode: str = "none"
+    matched_reference: str = ""
     target_name: str = ""
     target_path: Path | None = None
     status: str = "status_pending"
+
+
+@dataclass
+class ReferenceIndex:
+    rel_stem: dict[str, ReferenceItem]
+    stem: dict[str, ReferenceItem]
 
 
 def _get_settings_path() -> Path:
@@ -194,6 +249,18 @@ def _relative_path(file_path: Path, source_root: Path | None) -> Path:
         except ValueError:
             pass
     return Path(file_path.name)
+
+
+def _key_text(value: str) -> str:
+    return value.replace("\\", "/").casefold()
+
+
+def _rel_stem_key(path: Path, source_root: Path | None) -> str:
+    return _key_text(str(_relative_path(path, source_root).with_suffix("")))
+
+
+def _stem_key(path: Path) -> str:
+    return path.stem.casefold()
 
 
 def _target_stem(timestamp: float) -> str:
@@ -246,6 +313,58 @@ def _iter_rename_paths(paths: list[Path], recursive: bool) -> list[tuple[Path, P
     return files
 
 
+def _make_reference_item(file_path: Path, source_root: Path | None) -> ReferenceItem:
+    timestamp, source = detect_rename_timestamp(file_path)
+    return ReferenceItem(
+        path=file_path,
+        source_root=source_root,
+        rel_path=_relative_path(file_path, source_root),
+        timestamp=timestamp,
+        source=source,
+    )
+
+
+def _make_target_item(file_path: Path, source_root: Path | None) -> RenameItem:
+    timestamp, source = detect_rename_timestamp(file_path)
+    return RenameItem(
+        path=file_path,
+        source_root=source_root,
+        rel_path=_relative_path(file_path, source_root),
+        own_timestamp=timestamp,
+        own_source=source,
+    )
+
+
+def _add_unique(mapping: dict[str, ReferenceItem], duplicates: set[str], key: str, item: ReferenceItem) -> None:
+    if key in duplicates:
+        return
+    if key in mapping:
+        duplicates.add(key)
+        mapping.pop(key, None)
+        return
+    mapping[key] = item
+
+
+def _build_reference_index(items: list[ReferenceItem]) -> ReferenceIndex:
+    rel_stem: dict[str, ReferenceItem] = {}
+    stem: dict[str, ReferenceItem] = {}
+    duplicate_rel_stem: set[str] = set()
+    duplicate_stem: set[str] = set()
+    for item in items:
+        if item.timestamp is None:
+            continue
+        _add_unique(rel_stem, duplicate_rel_stem, _rel_stem_key(item.path, item.source_root), item)
+        _add_unique(stem, duplicate_stem, _stem_key(item.path), item)
+    return ReferenceIndex(rel_stem=rel_stem, stem=stem)
+
+
+def _find_reference_match(item: RenameItem, index: ReferenceIndex) -> ReferenceItem | None:
+    rel_match = index.rel_stem.get(_rel_stem_key(item.path, item.source_root))
+    if rel_match is not None:
+        return rel_match
+    return index.stem.get(_stem_key(item.path))
+
+
 def _unique_target_path(item: RenameItem, reserved: set[Path]) -> Path | None:
     if item.timestamp is None:
         return None
@@ -271,18 +390,32 @@ def _assign_target_paths(items: list[RenameItem]) -> None:
             reserved.add(_safe_resolve(target_path))
 
 
-def _make_item(file_path: Path, source_root: Path | None) -> RenameItem:
-    timestamp, source = detect_rename_timestamp(file_path)
-    return RenameItem(
-        path=file_path,
-        source_root=source_root,
-        rel_path=_relative_path(file_path, source_root),
-        timestamp=timestamp,
-        source=source,
-    )
+class ReferenceScanWorker(QObject):
+    row_ready = pyqtSignal(object)
+    finished = pyqtSignal(int)
+
+    def __init__(self, paths: list[Path], recursive: bool):
+        super().__init__()
+        self.paths = paths
+        self.recursive = recursive
+
+    def run(self):
+        seen: set[Path] = set()
+        items: list[ReferenceItem] = []
+        for file_path, source_root in _iter_rename_paths(self.paths, self.recursive):
+            resolved = _safe_resolve(file_path)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            items.append(_make_reference_item(file_path, source_root))
+
+        for item in sorted(items, key=lambda value: str(value.rel_path)):
+            self.row_ready.emit(item)
+
+        self.finished.emit(len(items))
 
 
-class ScanWorker(QObject):
+class TargetScanWorker(QObject):
     row_ready = pyqtSignal(object)
     finished = pyqtSignal(int)
 
@@ -299,11 +432,9 @@ class ScanWorker(QObject):
             if resolved in seen:
                 continue
             seen.add(resolved)
-            items.append(_make_item(file_path, source_root))
+            items.append(_make_target_item(file_path, source_root))
 
-        items.sort(key=lambda value: str(value.rel_path))
-        _assign_target_paths(items)
-        for item in items:
+        for item in sorted(items, key=lambda value: str(value.rel_path)):
             self.row_ready.emit(item)
 
         self.finished.emit(len(items))
@@ -331,7 +462,8 @@ class ProcessWorker(QObject):
 
             if item.timestamp is None or target_path is None:
                 skipped += 1
-                self.row_update.emit(index, "status_skipped", None)
+                status = item.status if item.status == "status_no_reference_match" else "status_skipped"
+                self.row_update.emit(index, status, None)
                 self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                 continue
 
@@ -365,16 +497,19 @@ class MainWindow(FramelessMainWindow):
         self.setWindowTitle("Rename Photos")
         self._title_bar_height = 36
         if not self._embedded:
-            self.resize(1280, 820)
+            self.resize(1320, 860)
             self._set_blue_title_bar()
 
         self.lang = DEFAULT_LANGUAGE
         self._last_status_key = "waiting_source"
         self._last_status_kwargs: dict = {}
+        self.reference_list: list[ReferenceItem] = []
         self.file_list: list[RenameItem] = []
         self.is_processing = False
-        self._scan_thread: QThread | None = None
-        self._scan_worker: ScanWorker | None = None
+        self._reference_scan_thread: QThread | None = None
+        self._reference_scan_worker: ReferenceScanWorker | None = None
+        self._target_scan_thread: QThread | None = None
+        self._target_scan_worker: TargetScanWorker | None = None
         self._process_thread: QThread | None = None
         self._process_worker: ProcessWorker | None = None
         self._settings_path = _get_settings_path()
@@ -422,72 +557,118 @@ class MainWindow(FramelessMainWindow):
         path_layout.setContentsMargins(16, 14, 16, 14)
         path_layout.setSpacing(10)
 
-        row1 = QHBoxLayout()
-        row1.setSpacing(10)
-        self.input_label = BodyLabel(self.tr("source_dir"), self)
-        self.input_edit = LineEdit(self)
-        self.input_edit.setReadOnly(False)
-        self.input_edit.setPlaceholderText(self.tr("source_placeholder"))
-        self.btn_input = PushButton(self.tr("choose_source"), self)
-        self.btn_input.setIcon(_pick_icon("FOLDER", "FOLDER_ADD"))
-        self.btn_input.clicked.connect(self.browse_input)
-        row1.addWidget(self.input_label)
-        row1.addWidget(self.input_edit, 1)
-        row1.addWidget(self.btn_input)
-        path_layout.addLayout(row1)
+        reference_row = QHBoxLayout()
+        reference_row.setSpacing(10)
+        self.reference_label = BodyLabel(self.tr("reference_dir"), self)
+        self.reference_edit = LineEdit(self)
+        self.reference_edit.setReadOnly(False)
+        self.reference_edit.setPlaceholderText(self.tr("reference_placeholder"))
+        self.btn_reference = PushButton(self.tr("choose_reference"), self)
+        self.btn_reference.setIcon(_pick_icon("FOLDER", "FOLDER_ADD"))
+        self.btn_reference.clicked.connect(self.browse_reference)
+        reference_row.addWidget(self.reference_label)
+        reference_row.addWidget(self.reference_edit, 1)
+        reference_row.addWidget(self.btn_reference)
+
+        target_row = QHBoxLayout()
+        target_row.setSpacing(10)
+        self.target_label = BodyLabel(self.tr("target_dir"), self)
+        self.target_edit = LineEdit(self)
+        self.target_edit.setReadOnly(False)
+        self.target_edit.setPlaceholderText(self.tr("target_placeholder"))
+        self.btn_target = PushButton(self.tr("choose_target"), self)
+        self.btn_target.setIcon(_pick_icon("FOLDER", "FOLDER_ADD"))
+        self.btn_target.clicked.connect(self.browse_target)
+        target_row.addWidget(self.target_label)
+        target_row.addWidget(self.target_edit, 1)
+        target_row.addWidget(self.btn_target)
+
+        path_layout.addLayout(reference_row)
+        path_layout.addLayout(target_row)
 
         option_card = CardWidget(self)
         option_layout = QVBoxLayout(option_card)
         option_layout.setContentsMargins(16, 14, 16, 14)
         option_layout.setSpacing(10)
-        row2 = QHBoxLayout()
-        row2.setSpacing(12)
+        option_row = QHBoxLayout()
+        option_row.setSpacing(12)
         self.include_subdirs_check = CheckBox(self.tr("scan_subdirs"), self)
         self.include_subdirs_check.setChecked(True)
         self.include_subdirs_check.toggled.connect(self.scan_files)
-        row2.addWidget(self.include_subdirs_check)
-        row2.addStretch(1)
-        option_layout.addLayout(row2)
+        self.require_reference_match_check = CheckBox(self.tr("require_reference_match"), self)
+        self.require_reference_match_check.setChecked(True)
+        self.require_reference_match_check.toggled.connect(self._on_match_option_changed)
+        option_row.addWidget(self.include_subdirs_check)
+        option_row.addWidget(self.require_reference_match_check)
+        option_row.addStretch(1)
+        option_layout.addLayout(option_row)
 
-        table_card = CardWidget(self)
-        table_layout = QVBoxLayout(table_card)
-        table_layout.setContentsMargins(10, 10, 10, 10)
-        table_layout.setSpacing(8)
-        hint_row = QHBoxLayout()
-        hint_row.setSpacing(8)
-        self.drop_hint = BodyLabel(self.tr("drop_hint"), self)
-        self.drop_hint.setStyleSheet("color: #6b7280; padding: 4px 6px;")
-        hint_row.addWidget(self.drop_hint)
-        hint_row.addStretch(1)
+        tables_layout = QHBoxLayout()
+        tables_layout.setSpacing(12)
+
+        reference_card = CardWidget(self)
+        reference_layout = QVBoxLayout(reference_card)
+        reference_layout.setContentsMargins(10, 10, 10, 10)
+        reference_layout.setSpacing(8)
+        reference_hint_row = QHBoxLayout()
+        reference_hint_row.setSpacing(8)
+        self.reference_drop_hint = BodyLabel(self.tr("reference_drop_hint"), self)
+        self.reference_drop_hint.setStyleSheet("color: #6b7280; padding: 4px 6px;")
+        reference_hint_row.addWidget(self.reference_drop_hint)
+        reference_hint_row.addStretch(1)
+
+        self.reference_table = TableWidget(self)
+        self.reference_table.setColumnCount(3)
+        self.reference_table.setHorizontalHeaderLabels(self._reference_headers())
+        self._configure_table(self.reference_table)
+        reference_header = self.reference_table.horizontalHeader()
+        reference_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        reference_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        reference_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.reference_table.viewport().installEventFilter(self)
+        reference_layout.addLayout(reference_hint_row)
+        reference_layout.addWidget(self.reference_table)
+
+        target_card = CardWidget(self)
+        target_layout = QVBoxLayout(target_card)
+        target_layout.setContentsMargins(10, 10, 10, 10)
+        target_layout.setSpacing(8)
+        target_hint_row = QHBoxLayout()
+        target_hint_row.setSpacing(8)
+        self.target_drop_hint = BodyLabel(self.tr("target_drop_hint"), self)
+        self.target_drop_hint.setStyleSheet("color: #6b7280; padding: 4px 6px;")
+        target_hint_row.addWidget(self.target_drop_hint)
+        target_hint_row.addStretch(1)
 
         self.table = TableWidget(self)
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(self._table_headers())
-        self.table.verticalHeader().setVisible(False)
-        self.table.setShowGrid(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(self.table.EditTrigger.NoEditTriggers)
-        self.table.setFrameShape(QFrame.Shape.NoFrame)
-        self.table.setAcceptDrops(True)
-        self.table.viewport().setAcceptDrops(True)
+        self.table.setHorizontalHeaderLabels(self._target_headers())
+        self._configure_table(self.table)
+        target_header = self.table.horizontalHeader()
+        target_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        target_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        target_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        target_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        target_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.table.viewport().installEventFilter(self)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.verticalHeader().setDefaultSectionSize(36)
-        table_layout.addLayout(hint_row)
-        table_layout.addWidget(self.table)
+        target_layout.addLayout(target_hint_row)
+        target_layout.addWidget(self.table)
+
+        tables_layout.addWidget(reference_card, 1)
+        tables_layout.addWidget(target_card, 1)
 
         action_card = CardWidget(self)
         action_layout = QVBoxLayout(action_card)
         action_layout.setContentsMargins(16, 12, 16, 12)
         action_layout.setSpacing(8)
-        row3 = QHBoxLayout()
-        row3.setSpacing(8)
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        self.btn_scan_reference = PushButton(self.tr("scan_reference"), self)
+        self.btn_scan_reference.setIcon(_pick_icon("SEARCH", "SYNC", "UPDATE"))
+        self.btn_scan_reference.clicked.connect(self.scan_reference_files)
+        self.btn_scan_target = PushButton(self.tr("scan_target"), self)
+        self.btn_scan_target.setIcon(_pick_icon("SEARCH", "SYNC", "UPDATE"))
+        self.btn_scan_target.clicked.connect(self.scan_target_files)
         self.btn_scan = PushButton(self.tr("rescan"), self)
         self.btn_scan.setIcon(_pick_icon("SYNC", "UPDATE"))
         self.btn_scan.clicked.connect(self.scan_files)
@@ -497,11 +678,13 @@ class MainWindow(FramelessMainWindow):
         self.btn_start = PrimaryPushButton(self.tr("start_rename"), self)
         self.btn_start.setIcon(_pick_icon("EDIT", "TAG", "PLAY"))
         self.btn_start.clicked.connect(self.start_processing)
-        row3.addWidget(self.btn_scan)
-        row3.addWidget(self.btn_clear)
-        row3.addStretch(1)
-        row3.addWidget(self.btn_start)
-        action_layout.addLayout(row3)
+        action_row.addWidget(self.btn_scan_reference)
+        action_row.addWidget(self.btn_scan_target)
+        action_row.addWidget(self.btn_scan)
+        action_row.addWidget(self.btn_clear)
+        action_row.addStretch(1)
+        action_row.addWidget(self.btn_start)
+        action_layout.addLayout(action_row)
 
         foot_card = CardWidget(self)
         foot_layout = QHBoxLayout(foot_card)
@@ -522,14 +705,25 @@ class MainWindow(FramelessMainWindow):
         outer.addWidget(path_card)
         if not self._embedded:
             outer.addWidget(option_card)
-        outer.addWidget(table_card, 1)
+        outer.addLayout(tables_layout, 1)
         outer.addWidget(action_card)
         outer.addWidget(foot_card)
 
-        self._init_default_input_dir()
+        self._init_default_dirs()
         self._load_settings()
         self._apply_language()
         self._connect_settings_signals()
+
+    def _configure_table(self, table: TableWidget):
+        table.verticalHeader().setVisible(False)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(table.SelectionBehavior.SelectRows)
+        table.setEditTriggers(table.EditTrigger.NoEditTriggers)
+        table.setFrameShape(QFrame.Shape.NoFrame)
+        table.setAcceptDrops(True)
+        table.viewport().setAcceptDrops(True)
+        table.verticalHeader().setDefaultSectionSize(36)
 
     def _set_blue_title_bar(self):
         self.setTitleBar(StandardTitleBar(self))
@@ -551,12 +745,19 @@ class MainWindow(FramelessMainWindow):
         text = TRANSLATIONS.get(self.lang, TRANSLATIONS["zh"]).get(key, key)
         return text.format(**kwargs) if kwargs else text
 
-    def _table_headers(self) -> list[str]:
+    def _reference_headers(self) -> list[str]:
         return [
-            self.tr("table_file"),
-            self.tr("table_shot_time"),
-            self.tr("table_target"),
-            self.tr("table_source"),
+            self.tr("table_reference_file"),
+            self.tr("table_reference_time"),
+            self.tr("table_reference_source"),
+        ]
+
+    def _target_headers(self) -> list[str]:
+        return [
+            self.tr("table_target_file"),
+            self.tr("table_match"),
+            self.tr("table_target_time"),
+            self.tr("table_target_name"),
             self.tr("table_status"),
         ]
 
@@ -572,21 +773,31 @@ class MainWindow(FramelessMainWindow):
             return self.tr("progress", i=i, total=total)
         return self._display_status(text)
 
+    def _target_match_text(self, item: RenameItem) -> str:
+        if item.match_mode == "reference" and item.matched_reference:
+            return item.matched_reference
+        if item.match_mode == "self":
+            return self.tr("match_self")
+        return self.tr("match_none")
+
     def _set_status_text(self, key: str, **kwargs):
         self._last_status_key = key
         self._last_status_kwargs = kwargs
         self.status.setText(self.tr(key, **kwargs))
 
-    def _init_default_input_dir(self):
+    def _init_default_dirs(self):
         pics_dir = _get_windows_pictures_dir() or (Path.home() / "Pictures")
-        self.input_edit.setText(str(pics_dir))
+        self.reference_edit.clear()
+        self.target_edit.setText(str(pics_dir))
         self._set_status_text("waiting_source")
 
     def _settings_payload(self) -> dict:
         return {
             "language": self.lang,
-            "input_dir": self.input_edit.text().strip(),
+            "reference_dir": self.reference_edit.text().strip(),
+            "target_dir": self.target_edit.text().strip(),
             "include_subdirs": self.include_subdirs_check.isChecked(),
+            "require_reference_match": self.require_reference_match_check.isChecked(),
         }
 
     def _save_settings(self):
@@ -602,8 +813,10 @@ class MainWindow(FramelessMainWindow):
             pass
 
     def _connect_settings_signals(self):
-        self.input_edit.editingFinished.connect(self._save_settings)
+        self.reference_edit.editingFinished.connect(self._save_settings)
+        self.target_edit.editingFinished.connect(self._save_settings)
         self.include_subdirs_check.toggled.connect(lambda _checked=False: self._save_settings())
+        self.require_reference_match_check.toggled.connect(lambda _checked=False: self._save_settings())
 
     def _load_settings(self):
         if not self._settings_path.exists():
@@ -623,10 +836,15 @@ class MainWindow(FramelessMainWindow):
                         self.language_combo.setCurrentIndex(idx)
                         break
 
-            input_dir = str(data.get("input_dir", "")).strip()
-            if input_dir:
-                self.input_edit.setText(input_dir)
+            reference_dir = str(data.get("reference_dir", "")).strip()
+            if reference_dir:
+                self.reference_edit.setText(reference_dir)
+
+            target_dir = str(data.get("target_dir", data.get("input_dir", ""))).strip()
+            if target_dir:
+                self.target_edit.setText(target_dir)
             self.include_subdirs_check.setChecked(bool(data.get("include_subdirs", True)))
+            self.require_reference_match_check.setChecked(bool(data.get("require_reference_match", True)))
         finally:
             self._suspend_settings_save = False
 
@@ -638,18 +856,30 @@ class MainWindow(FramelessMainWindow):
         self._apply_language()
         self._save_settings()
 
+    def _on_match_option_changed(self, _checked: bool):
+        self._refresh_target_matches()
+        self._save_settings()
+
     def _apply_language(self):
         self.setWindowTitle(self.tr("app_title"))
         self.title_label.setText(self.tr("header_title"))
         self.subtitle_label.setText(self.tr("header_subtitle"))
         self.subtitle_note_label.setText(self.tr("header_note"))
         self.language_label.setText(self.tr("language"))
-        self.input_label.setText(self.tr("source_dir"))
-        self.input_edit.setPlaceholderText(self.tr("source_placeholder"))
-        self.btn_input.setText(self.tr("choose_source"))
+        self.reference_label.setText(self.tr("reference_dir"))
+        self.target_label.setText(self.tr("target_dir"))
+        self.reference_edit.setPlaceholderText(self.tr("reference_placeholder"))
+        self.target_edit.setPlaceholderText(self.tr("target_placeholder"))
+        self.btn_reference.setText(self.tr("choose_reference"))
+        self.btn_target.setText(self.tr("choose_target"))
         self.include_subdirs_check.setText(self.tr("scan_subdirs"))
-        self.drop_hint.setText(self.tr("drop_hint"))
-        self.table.setHorizontalHeaderLabels(self._table_headers())
+        self.require_reference_match_check.setText(self.tr("require_reference_match"))
+        self.reference_drop_hint.setText(self.tr("reference_drop_hint"))
+        self.target_drop_hint.setText(self.tr("target_drop_hint"))
+        self.reference_table.setHorizontalHeaderLabels(self._reference_headers())
+        self.table.setHorizontalHeaderLabels(self._target_headers())
+        self.btn_scan_reference.setText(self.tr("scan_reference"))
+        self.btn_scan_target.setText(self.tr("scan_target"))
         self.btn_scan.setText(self.tr("rescan"))
         self.btn_clear.setText(self.tr("clear_list"))
         self.btn_start.setText(self.tr("start_rename"))
@@ -657,16 +887,20 @@ class MainWindow(FramelessMainWindow):
         self._refresh_table_language()
 
     def _refresh_table_language(self):
-        for row, item in enumerate(self.file_list):
-            source_item = self.table.item(row, 3)
-            status_item = self.table.item(row, 4)
+        for row, item in enumerate(self.reference_list):
+            source_item = self.reference_table.item(row, 2)
             if source_item is not None:
                 source_item.setText(self.tr(item.source))
+        for row, item in enumerate(self.file_list):
+            match_item = self.table.item(row, 1)
+            status_item = self.table.item(row, 4)
+            if match_item is not None:
+                match_item.setText(self._target_match_text(item))
             if status_item is not None:
                 status_item.setText(self._display_status(item.status))
 
     def eventFilter(self, obj, event):
-        if obj is self.table.viewport():
+        if obj in (self.reference_table.viewport(), self.table.viewport()):
             if event.type() == QEvent.Type.DragEnter:
                 if event.mimeData().hasUrls():
                     event.acceptProposedAction()
@@ -678,7 +912,10 @@ class MainWindow(FramelessMainWindow):
             if event.type() == QEvent.Type.Drop:
                 paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
                 if paths:
-                    self.add_dropped_paths(paths)
+                    if obj is self.reference_table.viewport():
+                        self.add_reference_paths(paths)
+                    else:
+                        self.add_target_paths(paths)
                     event.acceptProposedAction()
                     return True
         return super().eventFilter(obj, event)
@@ -695,31 +932,72 @@ class MainWindow(FramelessMainWindow):
             parent=self,
         )
 
-    def browse_input(self):
-        folder = QFileDialog.getExistingDirectory(self, self.tr("choose_source"))
+    def _first_source_dir(self, paths: list[Path]) -> Path | None:
+        first_dir = next((p for p in paths if p.is_dir()), None)
+        if first_dir is not None:
+            return first_dir
+        first_file = next((p for p in paths if p.is_file()), None)
+        return first_file.parent if first_file is not None else None
+
+    def browse_reference(self):
+        folder = QFileDialog.getExistingDirectory(self, self.tr("choose_reference"))
         if not folder:
             return
-        self.input_edit.setText(folder)
+        self.reference_edit.setText(folder)
         self._save_settings()
-        self.scan_files()
+        self.scan_reference_files()
+
+    def browse_target(self):
+        folder = QFileDialog.getExistingDirectory(self, self.tr("choose_target"))
+        if not folder:
+            return
+        self.target_edit.setText(folder)
+        self._save_settings()
+        self.scan_target_files()
 
     def clear_list(self):
         if self.is_processing:
             return
+        self.reference_list.clear()
         self.file_list.clear()
+        self.reference_table.setRowCount(0)
         self.table.setRowCount(0)
         self.progress.setValue(0)
         self._set_status_text("list_cleared")
 
-    def add_dropped_paths(self, paths: list[Path]):
+    def add_reference_paths(self, paths: list[Path]):
         if self.is_processing:
             return
-        first_dir = next((p for p in paths if p.is_dir()), None)
-        if first_dir is None:
-            first_file = next((p for p in paths if p.is_file()), None)
-            first_dir = first_file.parent if first_file is not None else None
+        first_dir = self._first_source_dir(paths)
         if first_dir is not None:
-            self.input_edit.setText(str(first_dir))
+            self.reference_edit.setText(str(first_dir))
+            self._save_settings()
+
+        existing = {_safe_resolve(item.path) for item in self.reference_list}
+        new_items: list[ReferenceItem] = []
+        for file_path, source_root in _iter_rename_paths(paths, self.include_subdirs_check.isChecked()):
+            resolved = _safe_resolve(file_path)
+            if resolved in existing:
+                continue
+            new_items.append(_make_reference_item(file_path, source_root))
+            existing.add(resolved)
+
+        if new_items:
+            new_items.sort(key=lambda value: str(value.rel_path))
+            self.reference_list.extend(new_items)
+            self._rebuild_reference_table()
+            self._refresh_target_matches()
+            self.progress.setValue(0)
+            self._set_status_text("reference_drop_added", added=len(new_items), count=len(self.reference_list))
+        else:
+            self._set_status_text("drop_no_new")
+
+    def add_target_paths(self, paths: list[Path]):
+        if self.is_processing:
+            return
+        first_dir = self._first_source_dir(paths)
+        if first_dir is not None:
+            self.target_edit.setText(str(first_dir))
             self._save_settings()
 
         existing = {_safe_resolve(item.path) for item in self.file_list}
@@ -728,72 +1006,170 @@ class MainWindow(FramelessMainWindow):
             resolved = _safe_resolve(file_path)
             if resolved in existing:
                 continue
-            new_items.append(_make_item(file_path, source_root))
+            new_items.append(_make_target_item(file_path, source_root))
             existing.add(resolved)
 
         if new_items:
             new_items.sort(key=lambda value: str(value.rel_path))
             self.file_list.extend(new_items)
-            _assign_target_paths(self.file_list)
-            self._rebuild_table()
+            self._refresh_target_matches()
             self.progress.setValue(0)
-            self._set_status_text("drop_added", added=len(new_items), count=len(self.file_list))
+            self._set_status_text("target_drop_added", added=len(new_items), count=len(self.file_list))
         else:
             self._set_status_text("drop_no_new")
 
     def scan_files(self):
         if self.is_processing:
             return
-        input_dir_text = self.input_edit.text().strip()
-        if not input_dir_text:
-            return
-        input_dir = Path(input_dir_text)
-        if not input_dir.is_dir():
-            self._notify(self.tr("invalid_folder_title"), self.tr("invalid_folder_content"), is_error=True)
-            return
+        started = False
+        reference_dir_text = self.reference_edit.text().strip()
+        if reference_dir_text:
+            started = self.scan_reference_files(notify_invalid=False) or started
+        started = self.scan_target_files(notify_invalid=False) or started
+        if not started:
+            self._notify(self.tr("invalid_folder_title"), self.tr("invalid_target_content"), is_error=True)
+
+    def scan_reference_files(self, notify_invalid: bool = True) -> bool:
+        if self.is_processing:
+            return False
+        reference_dir_text = self.reference_edit.text().strip()
+        if not reference_dir_text:
+            if notify_invalid:
+                self._notify(self.tr("invalid_folder_title"), self.tr("invalid_reference_content"), is_error=True)
+            return False
+        reference_dir = Path(reference_dir_text)
+        if not reference_dir.is_dir():
+            if notify_invalid:
+                self._notify(self.tr("invalid_folder_title"), self.tr("invalid_reference_content"), is_error=True)
+            return False
+
+        self.reference_list.clear()
+        self.reference_table.setRowCount(0)
+        self.progress.setValue(0)
+        self._set_status_text("scanning_reference")
+        self._save_settings()
+
+        self._reference_scan_thread = QThread(self)
+        self._reference_scan_worker = ReferenceScanWorker([reference_dir], self.include_subdirs_check.isChecked())
+        self._reference_scan_worker.moveToThread(self._reference_scan_thread)
+        self._reference_scan_thread.started.connect(self._reference_scan_worker.run)
+        self._reference_scan_worker.row_ready.connect(self._append_reference_row)
+        self._reference_scan_worker.finished.connect(self._reference_scan_finished)
+        self._reference_scan_worker.finished.connect(self._reference_scan_thread.quit)
+        self._reference_scan_worker.finished.connect(self._reference_scan_worker.deleteLater)
+        self._reference_scan_thread.finished.connect(self._reference_scan_thread.deleteLater)
+        self._reference_scan_thread.start()
+        return True
+
+    def scan_target_files(self, notify_invalid: bool = True) -> bool:
+        if self.is_processing:
+            return False
+        target_dir_text = self.target_edit.text().strip()
+        if not target_dir_text:
+            if notify_invalid:
+                self._notify(self.tr("invalid_folder_title"), self.tr("invalid_target_content"), is_error=True)
+            return False
+        target_dir = Path(target_dir_text)
+        if not target_dir.is_dir():
+            if notify_invalid:
+                self._notify(self.tr("invalid_folder_title"), self.tr("invalid_target_content"), is_error=True)
+            return False
 
         self.file_list.clear()
         self.table.setRowCount(0)
         self.progress.setValue(0)
-        self._set_status_text("scanning")
+        self._set_status_text("scanning_target")
         self._save_settings()
 
-        self._scan_thread = QThread(self)
-        self._scan_worker = ScanWorker([input_dir], self.include_subdirs_check.isChecked())
-        self._scan_worker.moveToThread(self._scan_thread)
-        self._scan_thread.started.connect(self._scan_worker.run)
-        self._scan_worker.row_ready.connect(self._append_scan_row)
-        self._scan_worker.finished.connect(self._scan_finished)
-        self._scan_worker.finished.connect(self._scan_thread.quit)
-        self._scan_worker.finished.connect(self._scan_worker.deleteLater)
-        self._scan_thread.finished.connect(self._scan_thread.deleteLater)
-        self._scan_thread.start()
+        self._target_scan_thread = QThread(self)
+        self._target_scan_worker = TargetScanWorker([target_dir], self.include_subdirs_check.isChecked())
+        self._target_scan_worker.moveToThread(self._target_scan_thread)
+        self._target_scan_thread.started.connect(self._target_scan_worker.run)
+        self._target_scan_worker.row_ready.connect(self._append_target_row)
+        self._target_scan_worker.finished.connect(self._target_scan_finished)
+        self._target_scan_worker.finished.connect(self._target_scan_thread.quit)
+        self._target_scan_worker.finished.connect(self._target_scan_worker.deleteLater)
+        self._target_scan_thread.finished.connect(self._target_scan_thread.deleteLater)
+        self._target_scan_thread.start()
+        return True
 
-    def _append_scan_row(self, item: RenameItem):
+    def _append_reference_row(self, item: ReferenceItem):
+        self.reference_list.append(item)
+        row = self.reference_table.rowCount()
+        self.reference_table.insertRow(row)
+        self.reference_table.setItem(row, 0, QTableWidgetItem(str(item.rel_path)))
+        self.reference_table.setItem(row, 1, QTableWidgetItem(_format_timestamp(item.timestamp)))
+        self.reference_table.setItem(row, 2, QTableWidgetItem(self.tr(item.source)))
+
+    def _append_target_row(self, item: RenameItem):
         self.file_list.append(item)
-        self._append_table_row(item)
+        self._append_target_table_row(item)
 
-    def _append_table_row(self, item: RenameItem):
+    def _append_target_table_row(self, item: RenameItem):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        target_name = item.target_name or self.tr("target_unknown")
         self.table.setItem(row, 0, QTableWidgetItem(str(item.rel_path)))
-        self.table.setItem(row, 1, QTableWidgetItem(_format_timestamp(item.timestamp)))
-        self.table.setItem(row, 2, QTableWidgetItem(target_name))
-        self.table.setItem(row, 3, QTableWidgetItem(self.tr(item.source)))
+        self.table.setItem(row, 1, QTableWidgetItem(self._target_match_text(item)))
+        self.table.setItem(row, 2, QTableWidgetItem(_format_timestamp(item.timestamp)))
+        self.table.setItem(row, 3, QTableWidgetItem(item.target_name or self.tr("target_unknown")))
         self.table.setItem(row, 4, QTableWidgetItem(self._display_status(item.status)))
 
-    def _rebuild_table(self):
+    def _rebuild_reference_table(self):
+        self.reference_table.setRowCount(0)
+        for item in self.reference_list:
+            self._append_reference_row_without_append(item)
+
+    def _append_reference_row_without_append(self, item: ReferenceItem):
+        row = self.reference_table.rowCount()
+        self.reference_table.insertRow(row)
+        self.reference_table.setItem(row, 0, QTableWidgetItem(str(item.rel_path)))
+        self.reference_table.setItem(row, 1, QTableWidgetItem(_format_timestamp(item.timestamp)))
+        self.reference_table.setItem(row, 2, QTableWidgetItem(self.tr(item.source)))
+
+    def _rebuild_target_table(self):
         self.table.setRowCount(0)
         for item in self.file_list:
-            self._append_table_row(item)
+            self._append_target_table_row(item)
 
-    def _scan_finished(self, count: int):
+    def _reference_scan_finished(self, count: int):
+        self._refresh_target_matches()
         if count == 0:
-            self._set_status_text("scan_none_status")
-            self._notify(self.tr("invalid_folder_title"), self.tr("scan_none_status"), is_error=True)
+            self._set_status_text("scan_reference_none_status")
             return
-        self._set_status_text("scan_done_status", count=count)
+        self._set_status_text("scan_reference_done_status", count=count)
+
+    def _target_scan_finished(self, count: int):
+        self._refresh_target_matches()
+        if count == 0:
+            self._set_status_text("scan_target_none_status")
+            return
+        self._set_status_text("scan_target_done_status", count=count)
+
+    def _refresh_target_matches(self):
+        index = _build_reference_index(self.reference_list)
+        require_match = self.require_reference_match_check.isChecked()
+        for item in self.file_list:
+            matched = _find_reference_match(item, index)
+            if matched is not None:
+                item.timestamp = matched.timestamp
+                item.source = "source_reference"
+                item.match_mode = "reference"
+                item.matched_reference = str(matched.rel_path)
+                item.status = "status_pending"
+            elif require_match:
+                item.timestamp = None
+                item.source = "source_unknown"
+                item.match_mode = "none"
+                item.matched_reference = ""
+                item.status = "status_no_reference_match"
+            else:
+                item.timestamp = item.own_timestamp
+                item.source = item.own_source
+                item.match_mode = "self" if item.own_timestamp is not None else "none"
+                item.matched_reference = ""
+                item.status = "status_pending" if item.own_timestamp is not None else "status_skipped"
+        _assign_target_paths(self.file_list)
+        self._rebuild_target_table()
 
     def start_processing(self):
         if self.is_processing:
@@ -803,9 +1179,14 @@ class MainWindow(FramelessMainWindow):
             return
 
         self.is_processing = True
-        self.btn_start.setEnabled(False)
-        self.btn_scan.setEnabled(False)
-        self.btn_clear.setEnabled(False)
+        for button in (
+            self.btn_start,
+            self.btn_scan_reference,
+            self.btn_scan_target,
+            self.btn_scan,
+            self.btn_clear,
+        ):
+            button.setEnabled(False)
         self.progress.setValue(0)
         self._set_status_text("preparing")
         self._save_settings()
@@ -837,7 +1218,7 @@ class MainWindow(FramelessMainWindow):
                     item.path = target_path
                     item.rel_path = _relative_path(target_path, item.source_root)
                 self.table.setItem(row, 0, QTableWidgetItem(str(item.rel_path)))
-                self.table.setItem(row, 2, QTableWidgetItem(item.target_name or self.tr("target_unknown")))
+                self.table.setItem(row, 3, QTableWidgetItem(item.target_name or self.tr("target_unknown")))
 
         self.table.setItem(row, 4, QTableWidgetItem(self._display_status(status_text)))
         self.table.scrollToItem(self.table.item(row, 4))
@@ -848,9 +1229,14 @@ class MainWindow(FramelessMainWindow):
 
     def _processing_finished(self, result: dict):
         self.is_processing = False
-        self.btn_start.setEnabled(True)
-        self.btn_scan.setEnabled(True)
-        self.btn_clear.setEnabled(True)
+        for button in (
+            self.btn_start,
+            self.btn_scan_reference,
+            self.btn_scan_target,
+            self.btn_scan,
+            self.btn_clear,
+        ):
+            button.setEnabled(True)
         self.progress.setValue(100)
         self._set_status_text(
             "task_done_status",

@@ -339,6 +339,7 @@ class SettingsPage(QWidget):
         rename_layout = self._new_card("rename_settings", layout)
         self._section(rename_layout, "scan_settings")
         self._row(rename_layout, rename.include_subdirs_check)
+        self._row(rename_layout, rename.require_reference_match_check)
 
     def set_language(self, lang: str):
         text = TRANSLATIONS[lang]
