@@ -43,6 +43,7 @@ DEFAULT_LANGUAGE = "zh"
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".heic", ".heif", ".png", ".tif", ".tiff", ".webp")
 VIDEO_SUFFIXES = (".mp4", ".mov", ".m4v", ".3gp")
 SUPPORTED_SUFFIXES = IMAGE_SUFFIXES + VIDEO_SUFFIXES
+EXIFTOOL_TIMEOUT_SECONDS = 60
 EXIF_DATETIME_TAGS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
 EXIF_SUBSEC_TAGS = ("SubSecTimeOriginal", "SubSecTimeDigitized", "SubSecTime")
 FILENAME_TIME_PATTERNS = (
@@ -81,6 +82,7 @@ TRANSLATIONS = {
         "status_pending": "待处理",
         "status_fixing": "正在写入时间戳",
         "status_fixed": "已修复",
+        "status_fixed_file_only": "已修复文件时间，媒体元数据未写入",
         "status_skipped": "已跳过",
         "status_failed": "失败：{error}",
         "source_exif": "EXIF 拍摄时间",
@@ -128,6 +130,7 @@ TRANSLATIONS = {
         "status_pending": "Pending",
         "status_fixing": "Writing timestamps",
         "status_fixed": "Fixed",
+        "status_fixed_file_only": "File timestamps fixed; media metadata was not written",
         "status_skipped": "Skipped",
         "status_failed": "Failed: {error}",
         "source_exif": "EXIF capture time",
@@ -413,9 +416,110 @@ def _startupinfo():
     return startupinfo
 
 
-def apply_file_timestamps(path: Path, timestamp: float) -> None:
+def _exiftool_candidates() -> list[str]:
+    env_path = os.environ.get("EXIFTOOL_PATH")
+    base_dir = Path(__file__).resolve().parent
+    candidates: list[str] = []
+    if env_path:
+        candidates.append(env_path)
+    candidates.extend(
+        [
+            str(base_dir / "vendor" / "exiftool" / "exiftool.exe"),
+            str(base_dir / "vendor" / "exiftool" / "exiftool"),
+            str(base_dir / "exiftool" / "exiftool.exe"),
+            str(base_dir / "exiftool" / "exiftool"),
+            str(base_dir / "bin" / "exiftool.exe"),
+            str(base_dir / "bin" / "exiftool"),
+            "exiftool",
+        ]
+    )
+    return candidates
+
+
+def _find_exiftool() -> str | None:
+    for candidate in _exiftool_candidates():
+        if candidate != "exiftool" and not Path(candidate).exists():
+            continue
+        try:
+            result = subprocess.run(
+                [candidate, "-ver"],
+                capture_output=True,
+                timeout=EXIFTOOL_TIMEOUT_SECONDS,
+                startupinfo=_startupinfo(),
+            )
+            if result.returncode == 0:
+                return candidate
+        except Exception:
+            continue
+    return None
+
+
+def _exif_datetime_text(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp).strftime("%Y:%m:%d %H:%M:%S")
+
+
+def _quicktime_datetime_text(timestamp: float) -> str:
+    # ExifTool accepts timezone-qualified local time for QuickTime date fields.
+    return datetime.fromtimestamp(timestamp).astimezone().strftime("%Y:%m:%d %H:%M:%S%z")
+
+
+def _write_media_timestamps(path: Path, timestamp: float) -> bool:
+    exiftool = _find_exiftool()
+    if exiftool is None:
+        return False
+
+    suffix = path.suffix.lower()
+    if suffix in IMAGE_SUFFIXES:
+        dt = _exif_datetime_text(timestamp)
+        args = [
+            exiftool,
+            "-overwrite_original",
+            "-P",
+            f"-AllDates={dt}",
+            f"-FileCreateDate={dt}",
+            f"-FileModifyDate={dt}",
+            f"-XMP:CreateDate={dt}",
+            f"-XMP:ModifyDate={dt}",
+            f"-XMP:DateTimeOriginal={dt}",
+            str(path),
+        ]
+    elif suffix in VIDEO_SUFFIXES:
+        dt = _quicktime_datetime_text(timestamp)
+        args = [
+            exiftool,
+            "-overwrite_original",
+            "-P",
+            "-api",
+            "QuickTimeUTC=1",
+            f"-CreateDate={dt}",
+            f"-ModifyDate={dt}",
+            f"-MediaCreateDate={dt}",
+            f"-MediaModifyDate={dt}",
+            f"-TrackCreateDate={dt}",
+            f"-TrackModifyDate={dt}",
+            f"-FileCreateDate={dt}",
+            f"-FileModifyDate={dt}",
+            str(path),
+        ]
+    else:
+        return False
+
+    result = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=EXIFTOOL_TIMEOUT_SECONDS,
+        startupinfo=_startupinfo(),
+    )
+    return result.returncode == 0
+
+
+def apply_file_timestamps(path: Path, timestamp: float) -> bool:
+    media_written = _write_media_timestamps(path, timestamp)
     os.utime(path, (timestamp, timestamp))
     _set_windows_creation_time(path, timestamp)
+    return media_written
 
 
 def _make_item(file_path: Path, source_root: Path | None) -> TimestampItem:
@@ -487,9 +591,9 @@ class ProcessWorker(QObject):
 
             self.row_update.emit(index, "status_fixing")
             try:
-                apply_file_timestamps(item.path, item.timestamp)
+                media_written = apply_file_timestamps(item.path, item.timestamp)
                 success += 1
-                self.row_update.emit(index, "status_fixed")
+                self.row_update.emit(index, "status_fixed" if media_written else "status_fixed_file_only")
             except Exception as exc:
                 failed += 1
                 self.row_update.emit(index, f"status_failed|{str(exc)[:36]}")
