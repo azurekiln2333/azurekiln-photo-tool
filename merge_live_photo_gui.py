@@ -6,6 +6,7 @@ import importlib
 import io
 import json
 import os
+import re
 import shutil
 import struct
 import sys
@@ -16,6 +17,7 @@ from PIL import ExifTags, Image
 from qframelesswindow import FramelessMainWindow, StandardTitleBar
 
 from merge_live_photo_translations import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, TRANSLATIONS
+from timestamp_fix_gui import apply_file_times_only
 
 from PyQt6.QtCore import QEvent, QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -54,6 +56,10 @@ XMP_IDENTIFIER = b"http://ns.adobe.com/xap/1.0/\x00"
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".heic", ".heif")
 VIDEO_SUFFIXES = (".mp4", ".mov")
 EXIF_TIMESTAMP_TAGS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
+FILENAME_TIME_PATTERNS = (
+    re.compile(r"(20\d{2}|19\d{2})([01]\d)([0-3]\d)[_\- ]?([0-2]\d)([0-5]\d)([0-5]\d)"),
+    re.compile(r"(20\d{2}|19\d{2})[-_.]([01]\d)[-_.]([0-3]\d)[_ -]([0-2]\d)[-.]([0-5]\d)[-.]([0-5]\d)"),
+)
 SUMMARY_OUTPUT_DIR_NAME = "AzureKiln_MotionPhoto_Summary_Output"
 LEGACY_SUMMARY_OUTPUT_DIR_NAMES = ("Summary_Output", "MergeLivePhoto_Summary", "All_Processed_Summary")
 LIVE_OUTPUT_DIR_NAME = "MotionPhotosOutput"
@@ -266,8 +272,23 @@ def _capture_timestamp_from_image(img_path: Path) -> float | None:
     return None
 
 
+def _capture_timestamp_from_filename(path: Path) -> float | None:
+    for pattern in FILENAME_TIME_PATTERNS:
+        match = pattern.search(path.stem)
+        if not match:
+            continue
+        try:
+            year, month, day, hour, minute, second = (int(part) for part in match.groups())
+            return datetime(year, month, day, hour, minute, second).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
 def _apply_output_timestamp(output_path: Path, source_path: Path):
     ts = _capture_timestamp_from_image(source_path)
+    if ts is None:
+        ts = _capture_timestamp_from_filename(source_path)
     if ts is None:
         try:
             stat = os.stat(source_path)
@@ -276,7 +297,7 @@ def _apply_output_timestamp(output_path: Path, source_path: Path):
             return
 
     try:
-        os.utime(output_path, (ts, ts))
+        apply_file_times_only(output_path, ts)
     except Exception:
         pass
 
@@ -708,6 +729,7 @@ class ProcessWorker(QObject):
                             dest_file = summary_out_path / final_rel_path
                             dest_file.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(target_static_file, dest_file)
+                            _apply_output_timestamp(dest_file, img_path)
                             summary_success += 1
                         except Exception:
                             summary_failed += 1
@@ -741,6 +763,7 @@ class ProcessWorker(QObject):
                         dest_file = summary_out_path / final_rel_path
                         dest_file.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(output_file, dest_file)
+                        _apply_output_timestamp(dest_file, img_path)
                         summary_success += 1
                     except Exception:
                         summary_failed += 1
