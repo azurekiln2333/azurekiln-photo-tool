@@ -9,6 +9,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import ExifTags, Image
@@ -46,6 +47,7 @@ SUPPORTED_SUFFIXES = IMAGE_SUFFIXES + VIDEO_SUFFIXES
 EXIFTOOL_TIMEOUT_SECONDS = 60
 EXIF_DATETIME_TAGS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
 EXIF_SUBSEC_TAGS = ("SubSecTimeOriginal", "SubSecTimeDigitized", "SubSecTime")
+WINDOWS_MEDIA_DATE_PROPERTY_IDS = (12, 208, 182, 183, 191)
 FILENAME_TIME_PATTERNS = (
     re.compile(r"(20\d{2}|19\d{2})([01]\d)([0-3]\d)[_\- ]?([0-2]\d)([0-5]\d)([0-5]\d)"),
     re.compile(r"(20\d{2}|19\d{2})[-_.]([01]\d)[-_.]([0-3]\d)[_ -]([0-2]\d)[-.]([0-5]\d)[-.]([0-5]\d)"),
@@ -314,6 +316,75 @@ def _parse_exif_datetime(value: object, subsec: object = None) -> float | None:
     return None
 
 
+def _parse_shell_datetime(value: object) -> float | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+
+    text = text.replace("\u200e", "").replace("\u200f", "")
+    text = re.sub(r"[\u202a-\u202e]", "", text)
+    text = text.replace("上午", "AM").replace("下午", "PM")
+
+    formats = (
+        "%Y/%m/%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%m/%d/%Y %I:%M %p",
+        "%m/%d/%Y %I:%M:%S %p",
+    )
+    for fmt in formats:
+        try:
+            return datetime.strptime(text, fmt).timestamp()
+        except ValueError:
+            continue
+
+    match = re.search(
+        r"(20\d{2}|19\d{2})\D+([01]?\d)\D+([0-3]?\d)\D+([0-2]?\d)\D+([0-5]\d)(?:\D+([0-5]\d))?",
+        text,
+    )
+    if match:
+        try:
+            year, month, day, hour, minute, second = match.groups(default="0")
+            return datetime(
+                int(year),
+                int(month),
+                int(day),
+                int(hour),
+                int(minute),
+                int(second),
+            ).timestamp()
+        except ValueError:
+            return None
+
+    return None
+
+
+def _timestamp_from_windows_shell(path: Path) -> float | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        import win32com.client  # type: ignore
+
+        shell = win32com.client.Dispatch("Shell.Application")
+        folder = shell.NameSpace(str(path.parent))
+        if folder is None:
+            return None
+        item = folder.ParseName(path.name)
+        if item is None:
+            return None
+        for prop_id in WINDOWS_MEDIA_DATE_PROPERTY_IDS:
+            value = folder.GetDetailsOf(item, prop_id)
+            ts = _parse_shell_datetime(value)
+            if ts is not None:
+                return ts
+    except Exception:
+        return None
+    return None
+
+
 def _timestamp_from_exif(path: Path) -> float | None:
     if path.suffix.lower() not in IMAGE_SUFFIXES:
         return None
@@ -374,6 +445,9 @@ def _earliest_file_timestamp(path: Path) -> float | None:
 
 
 def detect_timestamp(path: Path) -> tuple[float | None, str]:
+    ts = _timestamp_from_windows_shell(path)
+    if ts is not None:
+        return ts, "source_exif"
     ts = _timestamp_from_exif(path)
     if ts is not None:
         return ts, "source_exif"
@@ -392,20 +466,68 @@ def _format_timestamp(ts: float | None) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _set_windows_creation_time(path: Path, timestamp: float) -> None:
+def _unix_time_to_filetime(timestamp: float) -> int:
+    return int((timestamp + 11644473600) * 10_000_000)
+
+
+def _set_windows_file_times(path: Path, timestamp: float) -> None:
     if sys.platform != "win32":
         return
-    script = (
-        "$dt=[DateTimeOffset]::FromUnixTimeSeconds([int64]$args[1]).LocalDateTime; "
-        "[System.IO.File]::SetCreationTime($args[0], $dt); "
-        "[System.IO.File]::SetLastWriteTime($args[0], $dt); "
-        "[System.IO.File]::SetLastAccessTime($args[0], $dt)"
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+
+    set_file_time = kernel32.SetFileTime
+    set_file_time.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    set_file_time.restype = ctypes.c_int
+
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+
+    generic_write = 0x40000000
+    file_share_read = 0x00000001
+    file_share_write = 0x00000002
+    file_share_delete = 0x00000004
+    open_existing = 3
+    file_attribute_normal = 0x00000080
+    invalid_handle_value = ctypes.c_void_p(-1).value
+
+    handle = create_file(
+        str(path),
+        generic_write,
+        file_share_read | file_share_write | file_share_delete,
+        None,
+        open_existing,
+        file_attribute_normal,
+        None,
     )
-    subprocess.run(
-        ["powershell.exe", "-NoProfile", "-Command", script, str(path), str(int(timestamp))],
-        capture_output=True,
-        startupinfo=_startupinfo(),
-    )
+    if handle == invalid_handle_value:
+        raise ctypes.WinError(ctypes.get_last_error())
+
+    value = _unix_time_to_filetime(timestamp)
+    low = value & 0xFFFFFFFF
+    high = value >> 32
+
+    class FILETIME(ctypes.Structure):
+        _fields_ = [("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32)]
+
+    filetime = FILETIME(low, high)
+    try:
+        ok = set_file_time(handle, ctypes.byref(filetime), ctypes.byref(filetime), ctypes.byref(filetime))
+        if not ok:
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        close_handle(handle)
 
 
 def _startupinfo():
@@ -436,6 +558,7 @@ def _exiftool_candidates() -> list[str]:
     return candidates
 
 
+@lru_cache(maxsize=1)
 def _find_exiftool() -> str | None:
     for candidate in _exiftool_candidates():
         if candidate != "exiftool" and not Path(candidate).exists():
@@ -507,8 +630,6 @@ def _write_media_timestamps(path: Path, timestamp: float) -> bool:
     result = subprocess.run(
         args,
         capture_output=True,
-        text=True,
-        encoding="utf-8",
         timeout=EXIFTOOL_TIMEOUT_SECONDS,
         startupinfo=_startupinfo(),
     )
@@ -518,7 +639,7 @@ def _write_media_timestamps(path: Path, timestamp: float) -> bool:
 def apply_file_timestamps(path: Path, timestamp: float) -> bool:
     media_written = _write_media_timestamps(path, timestamp)
     os.utime(path, (timestamp, timestamp))
-    _set_windows_creation_time(path, timestamp)
+    _set_windows_file_times(path, timestamp)
     return media_written
 
 
