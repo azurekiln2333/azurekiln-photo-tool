@@ -55,7 +55,8 @@ from timestamp_fix_gui import (
 
 
 APP_NAME = "RenamePhotoGUI"
-TARGET_PREFIX = "IMG"
+VIDEO_RENAME_SUFFIXES = (".mp4", ".mov")
+SUPPORTED_RENAME_SUFFIXES = IMAGE_SUFFIXES + VIDEO_RENAME_SUFFIXES
 TRANSLATIONS = {
     "zh": {
         "app_title": "照片重命名",
@@ -197,6 +198,20 @@ TRANSLATIONS = {
 
 TRANSLATIONS["zh"].update(
     {
+        "app_title": "照片/视频重命名",
+        "header_title": "照片/视频重命名",
+        "header_subtitle": "左侧读取原始照片或视频时间，右侧按匹配到的文件时间重命名待处理文件",
+        "header_note": "匹配优先使用相对路径，其次使用文件名；未匹配时可选择是否允许使用待重命名文件自身时间。",
+        "reference_dir": "原始文件目录",
+        "target_dir": "待重命名目录",
+        "reference_placeholder": "选择或拖入用于读取时间信息的原始照片/视频目录",
+        "target_placeholder": "选择或拖入实际需要重命名的照片/视频目录",
+        "reference_drop_hint": "原始文件区：拖入保留正确时间信息的照片、视频或文件夹，只读取信息，不改名。",
+        "target_drop_hint": "待重命名区：拖入需要改名的照片、视频或文件夹，照片生成 IMG_年月日_时分秒，视频生成 VID_年月日_时分秒。",
+        "scan_reference_none_status": "未找到原始照片或视频",
+        "scan_target_none_status": "未找到待重命名照片或视频",
+        "cannot_start_content": "请先添加待重命名照片或视频。",
+        "task_done_message": "照片/视频重命名完成。\n\n成功: {success}\n失败: {failed}\n跳过: {skipped}",
         "write_timestamps": "写入文件时间戳",
         "status_renamed_timestamped": "已重命名并写入时间戳",
         "status_timestamped": "文件名已符合规则，已写入时间戳",
@@ -204,6 +219,20 @@ TRANSLATIONS["zh"].update(
 )
 TRANSLATIONS["en"].update(
     {
+        "app_title": "Rename Photos and Videos",
+        "header_title": "Rename Photos and Videos",
+        "header_subtitle": "Read original photo/video times on the left, then rename matched target files on the right",
+        "header_note": "Matching prefers relative paths, then filenames. Unmatched targets can optionally fall back to their own time.",
+        "reference_dir": "Original folder",
+        "target_dir": "Target folder",
+        "reference_placeholder": "Choose or drop original photos/videos used as the timestamp reference",
+        "target_placeholder": "Choose or drop photos/videos that should be renamed",
+        "reference_drop_hint": "Original area: drop photos, videos, or folders with correct timestamps. These files are only read.",
+        "target_drop_hint": "Target area: drop photos, videos, or folders. Photos use IMG_yyyyMMdd_HHmmss; videos use VID_yyyyMMdd_HHmmss.",
+        "scan_reference_none_status": "No original photos or videos found",
+        "scan_target_none_status": "No target photos or videos found",
+        "cannot_start_content": "Add target photos or videos to rename first.",
+        "task_done_message": "Photo/video rename complete.\n\nRenamed: {success}\nFailed: {failed}\nSkipped: {skipped}",
         "write_timestamps": "Write file timestamps",
         "status_renamed_timestamped": "Renamed and timestamped",
         "status_timestamped": "Already named; timestamped",
@@ -280,12 +309,16 @@ def _stem_key(path: Path) -> str:
     return path.stem.casefold()
 
 
-def _target_stem(timestamp: float) -> str:
-    return datetime.fromtimestamp(timestamp).strftime(f"{TARGET_PREFIX}_%Y%m%d_%H%M%S")
+def _target_prefix_for(path: Path) -> str:
+    return "VID" if path.suffix.lower() in VIDEO_RENAME_SUFFIXES else "IMG"
+
+
+def _target_stem(path: Path, timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp).strftime(f"{_target_prefix_for(path)}_%Y%m%d_%H%M%S")
 
 
 def _target_filename(path: Path, timestamp: float, index: int = 0) -> str:
-    stem = _target_stem(timestamp)
+    stem = _target_stem(path, timestamp)
     if index:
         stem = f"{stem}_{index:03d}"
     return f"{stem}{path.suffix.lower()}"
@@ -295,8 +328,8 @@ def _is_same_path(left: Path, right: Path) -> bool:
     return _safe_resolve(left) == _safe_resolve(right)
 
 
-def _is_supported_image(path: Path) -> bool:
-    return path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+def _is_supported_rename_file(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in SUPPORTED_RENAME_SUFFIXES
 
 
 def detect_rename_timestamp(path: Path) -> tuple[float | None, str]:
@@ -320,13 +353,13 @@ def _iter_rename_paths(paths: list[Path], recursive: bool) -> list[tuple[Path, P
     files: list[tuple[Path, Path | None]] = []
     for path in paths:
         if path.is_file():
-            if _is_supported_image(path):
+            if _is_supported_rename_file(path):
                 files.append((path, path.parent))
             continue
         if not path.is_dir():
             continue
         iterator = path.rglob("*") if recursive else path.glob("*")
-        files.extend((candidate, path) for candidate in iterator if _is_supported_image(candidate))
+        files.extend((candidate, path) for candidate in iterator if _is_supported_rename_file(candidate))
     return files
 
 
