@@ -44,7 +44,10 @@ from timestamp_fix_gui import (
     _format_timestamp,
     _get_windows_pictures_dir,
     _safe_resolve,
-    detect_timestamp,
+    _earliest_file_timestamp,
+    _timestamp_from_exif,
+    _timestamp_from_filename,
+    _timestamp_from_windows_shell,
     setTheme,
     setThemeColor,
 )
@@ -212,6 +215,23 @@ def _is_supported_image(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
 
 
+def detect_rename_timestamp(path: Path) -> tuple[float | None, str]:
+    # Windows Shell metadata often drops seconds, so it is only a fallback for renaming.
+    ts = _timestamp_from_exif(path)
+    if ts is not None:
+        return ts, "source_exif"
+    ts = _timestamp_from_filename(path)
+    if ts is not None:
+        return ts, "source_filename"
+    ts = _timestamp_from_windows_shell(path)
+    if ts is not None:
+        return ts, "source_exif"
+    ts = _earliest_file_timestamp(path)
+    if ts is not None:
+        return ts, "source_earliest"
+    return None, "source_unknown"
+
+
 def _iter_rename_paths(paths: list[Path], recursive: bool) -> list[tuple[Path, Path | None]]:
     files: list[tuple[Path, Path | None]] = []
     for path in paths:
@@ -252,7 +272,7 @@ def _assign_target_paths(items: list[RenameItem]) -> None:
 
 
 def _make_item(file_path: Path, source_root: Path | None) -> RenameItem:
-    timestamp, source = detect_timestamp(file_path)
+    timestamp, source = detect_rename_timestamp(file_path)
     return RenameItem(
         path=file_path,
         source_root=source_root,
