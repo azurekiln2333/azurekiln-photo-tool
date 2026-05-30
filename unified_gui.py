@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 from main_gui import MainWindow as FlymeFixWindow
 from merge_live_photo_gui import MainWindow as MergeLivePhotoWindow
+from rename_photo_gui import MainWindow as RenamePhotoWindow
 from split_huawei_live_photo_gui import MainWindow as SplitHuaweiWindow
 from timestamp_fix_gui import MainWindow as TimestampFixWindow
 
@@ -91,6 +92,18 @@ TRANSLATIONS["en"].update(
     {
         "timestamp": "Fix Photo Timestamps",
         "timestamp_settings": "Photo Timestamp Fix Settings",
+    }
+)
+TRANSLATIONS["zh"].update(
+    {
+        "rename": "照片重命名",
+        "rename_settings": "照片重命名设置",
+    }
+)
+TRANSLATIONS["en"].update(
+    {
+        "rename": "Rename Photos",
+        "rename_settings": "Photo Rename Settings",
     }
 )
 
@@ -279,7 +292,7 @@ class SettingsPage(QWidget):
         self._button_groups.append(group)
 
     def _build_feature_settings(self, layout: QVBoxLayout):
-        merge, split, flyme, timestamp = self.feature_windows
+        merge, split, flyme, timestamp, rename = self.feature_windows
 
         merge_layout = self._new_card("merge_settings", layout)
         self._section(merge_layout, "scan_settings")
@@ -322,6 +335,10 @@ class SettingsPage(QWidget):
         timestamp_layout = self._new_card("timestamp_settings", layout)
         self._section(timestamp_layout, "scan_settings")
         self._row(timestamp_layout, timestamp.include_subdirs_check)
+
+        rename_layout = self._new_card("rename_settings", layout)
+        self._section(rename_layout, "scan_settings")
+        self._row(rename_layout, rename.include_subdirs_check)
 
     def set_language(self, lang: str):
         text = TRANSLATIONS[lang]
@@ -421,12 +438,14 @@ class UnifiedMainWindow(FluentWindow):
             SplitHuaweiWindow(self, embedded=True),
             FlymeFixWindow(self, embedded=True),
             TimestampFixWindow(self, embedded=True),
+            RenamePhotoWindow(self, embedded=True),
         ]
         self.pages = [
             EmbeddedPage("merge", self._feature_windows[0], self),
             EmbeddedPage("split", self._feature_windows[1], self),
             EmbeddedPage("flyme", self._feature_windows[2], self),
             EmbeddedPage("timestamp", self._feature_windows[3], self),
+            EmbeddedPage("rename", self._feature_windows[4], self),
         ]
         self.about_page = AboutPage(self)
         self.settings_page = SettingsPage(self._feature_windows, self)
@@ -453,6 +472,12 @@ class UnifiedMainWindow(FluentWindow):
             self.pages[3],
             _pick_icon("CALENDAR", "HISTORY", "CLOCK"),
             TRANSLATIONS[self.lang]["timestamp"],
+            NavigationItemPosition.TOP,
+        )
+        self.rename_item = self.addSubInterface(
+            self.pages[4],
+            _pick_icon("EDIT", "TAG", "DOCUMENT"),
+            TRANSLATIONS[self.lang]["rename"],
             NavigationItemPosition.TOP,
         )
         self.about_item = self.addSubInterface(
@@ -579,6 +604,8 @@ class UnifiedMainWindow(FluentWindow):
         self.flyme_item.setToolTip(text["flyme"])
         self.timestamp_item.setText(text["timestamp"])
         self.timestamp_item.setToolTip(text["timestamp"])
+        self.rename_item.setText(text["rename"])
+        self.rename_item.setToolTip(text["rename"])
         self.about_item.setText(text["about"])
         self.about_item.setToolTip(text["about"])
         self.settings_item.setText(text["settings"])
