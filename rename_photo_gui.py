@@ -238,6 +238,7 @@ class RenameItem:
 
 @dataclass
 class ReferenceIndex:
+    path: dict[Path, ReferenceItem]
     rel_stem: dict[str, ReferenceItem]
     stem: dict[str, ReferenceItem]
 
@@ -362,6 +363,7 @@ def _add_unique(mapping: dict[str, ReferenceItem], duplicates: set[str], key: st
 
 
 def _build_reference_index(items: list[ReferenceItem]) -> ReferenceIndex:
+    path: dict[Path, ReferenceItem] = {}
     rel_stem: dict[str, ReferenceItem] = {}
     stem: dict[str, ReferenceItem] = {}
     duplicate_rel_stem: set[str] = set()
@@ -369,12 +371,16 @@ def _build_reference_index(items: list[ReferenceItem]) -> ReferenceIndex:
     for item in items:
         if item.timestamp is None:
             continue
+        path[_safe_resolve(item.path)] = item
         _add_unique(rel_stem, duplicate_rel_stem, _rel_stem_key(item.path, item.source_root), item)
         _add_unique(stem, duplicate_stem, _stem_key(item.path), item)
-    return ReferenceIndex(rel_stem=rel_stem, stem=stem)
+    return ReferenceIndex(path=path, rel_stem=rel_stem, stem=stem)
 
 
 def _find_reference_match(item: RenameItem, index: ReferenceIndex) -> ReferenceItem | None:
+    path_match = index.path.get(_safe_resolve(item.path))
+    if path_match is not None:
+        return path_match
     rel_match = index.rel_stem.get(_rel_stem_key(item.path, item.source_root))
     if rel_match is not None:
         return rel_match
@@ -542,6 +548,7 @@ class MainWindow(FramelessMainWindow):
         self._process_worker: ProcessWorker | None = None
         self._settings_path = _get_settings_path()
         self._suspend_settings_save = False
+        self._syncing_quick_options = False
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -633,6 +640,23 @@ class MainWindow(FramelessMainWindow):
         option_row.addWidget(self.write_timestamps_check)
         option_row.addStretch(1)
         option_layout.addLayout(option_row)
+
+        quick_option_row = QHBoxLayout()
+        quick_option_row.setSpacing(12)
+        self.quick_require_reference_match_check = CheckBox(self.tr("require_reference_match"), self)
+        self.quick_require_reference_match_check.setChecked(self.require_reference_match_check.isChecked())
+        self.quick_require_reference_match_check.toggled.connect(self._on_quick_require_reference_match_changed)
+        self.quick_write_timestamps_check = CheckBox(self.tr("write_timestamps"), self)
+        self.quick_write_timestamps_check.setChecked(self.write_timestamps_check.isChecked())
+        self.quick_write_timestamps_check.toggled.connect(self._on_quick_write_timestamps_changed)
+        quick_option_row.addStretch(1)
+        quick_option_row.addWidget(self.quick_require_reference_match_check)
+        quick_option_row.addWidget(self.quick_write_timestamps_check)
+        if self._embedded:
+            path_layout.addLayout(quick_option_row)
+        else:
+            self.quick_require_reference_match_check.hide()
+            self.quick_write_timestamps_check.hide()
 
         tables_layout = QHBoxLayout()
         tables_layout.setSpacing(12)
@@ -849,7 +873,7 @@ class MainWindow(FramelessMainWindow):
         self.target_edit.editingFinished.connect(self._save_settings)
         self.include_subdirs_check.toggled.connect(lambda _checked=False: self._save_settings())
         self.require_reference_match_check.toggled.connect(lambda _checked=False: self._save_settings())
-        self.write_timestamps_check.toggled.connect(lambda _checked=False: self._save_settings())
+        self.write_timestamps_check.toggled.connect(self._on_write_timestamps_changed)
 
     def _load_settings(self):
         if not self._settings_path.exists():
@@ -879,6 +903,7 @@ class MainWindow(FramelessMainWindow):
             self.include_subdirs_check.setChecked(bool(data.get("include_subdirs", True)))
             self.require_reference_match_check.setChecked(bool(data.get("require_reference_match", True)))
             self.write_timestamps_check.setChecked(bool(data.get("write_timestamps", False)))
+            self._sync_quick_options()
         finally:
             self._suspend_settings_save = False
 
@@ -890,7 +915,36 @@ class MainWindow(FramelessMainWindow):
         self._apply_language()
         self._save_settings()
 
+    def _sync_quick_options(self):
+        if self._syncing_quick_options:
+            return
+        self._syncing_quick_options = True
+        try:
+            self.quick_require_reference_match_check.blockSignals(True)
+            self.quick_write_timestamps_check.blockSignals(True)
+            self.quick_require_reference_match_check.setChecked(self.require_reference_match_check.isChecked())
+            self.quick_write_timestamps_check.setChecked(self.write_timestamps_check.isChecked())
+        finally:
+            self.quick_require_reference_match_check.blockSignals(False)
+            self.quick_write_timestamps_check.blockSignals(False)
+            self._syncing_quick_options = False
+
+    def _on_quick_require_reference_match_changed(self, checked: bool):
+        if self._syncing_quick_options:
+            return
+        self.require_reference_match_check.setChecked(checked)
+
+    def _on_quick_write_timestamps_changed(self, checked: bool):
+        if self._syncing_quick_options:
+            return
+        self.write_timestamps_check.setChecked(checked)
+
+    def _on_write_timestamps_changed(self, _checked: bool):
+        self._sync_quick_options()
+        self._save_settings()
+
     def _on_match_option_changed(self, _checked: bool):
+        self._sync_quick_options()
         self._refresh_target_matches()
         self._save_settings()
 
@@ -909,6 +963,8 @@ class MainWindow(FramelessMainWindow):
         self.include_subdirs_check.setText(self.tr("scan_subdirs"))
         self.require_reference_match_check.setText(self.tr("require_reference_match"))
         self.write_timestamps_check.setText(self.tr("write_timestamps"))
+        self.quick_require_reference_match_check.setText(self.tr("require_reference_match"))
+        self.quick_write_timestamps_check.setText(self.tr("write_timestamps"))
         self.reference_drop_hint.setText(self.tr("reference_drop_hint"))
         self.target_drop_hint.setText(self.tr("target_drop_hint"))
         self.reference_table.setHorizontalHeaderLabels(self._reference_headers())
