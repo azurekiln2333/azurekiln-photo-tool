@@ -41,6 +41,7 @@ from timestamp_fix_gui import (
     SubtitleLabel,
     TableWidget,
     Theme,
+    apply_file_times_only,
     _earliest_file_timestamp,
     _format_timestamp,
     _get_windows_pictures_dir,
@@ -193,6 +194,21 @@ TRANSLATIONS = {
         "target_unknown": "-",
     },
 }
+
+TRANSLATIONS["zh"].update(
+    {
+        "write_timestamps": "写入文件时间戳",
+        "status_renamed_timestamped": "已重命名并写入时间戳",
+        "status_timestamped": "文件名已符合规则，已写入时间戳",
+    }
+)
+TRANSLATIONS["en"].update(
+    {
+        "write_timestamps": "Write file timestamps",
+        "status_renamed_timestamped": "Renamed and timestamped",
+        "status_timestamped": "Already named; timestamped",
+    }
+)
 
 
 @dataclass
@@ -445,9 +461,10 @@ class ProcessWorker(QObject):
     progress_update = pyqtSignal(int, str)
     finished = pyqtSignal(dict)
 
-    def __init__(self, items: list[RenameItem]):
+    def __init__(self, items: list[RenameItem], write_timestamps: bool = False):
         super().__init__()
         self.items = items
+        self.write_timestamps = write_timestamps
 
     def run(self):
         success = 0
@@ -468,19 +485,30 @@ class ProcessWorker(QObject):
                 continue
 
             if _is_same_path(item.path, target_path):
-                skipped += 1
-                self.row_update.emit(index, "status_already_named", target_path)
+                try:
+                    if self.write_timestamps:
+                        apply_file_times_only(item.path, item.timestamp)
+                        self.row_update.emit(index, "status_timestamped", target_path)
+                    else:
+                        self.row_update.emit(index, "status_already_named", target_path)
+                    skipped += 1
+                except Exception as exc:
+                    failed += 1
+                    self.row_update.emit(index, f"status_failed|{str(exc)[:36]}", target_path)
                 self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                 continue
 
             self.row_update.emit(index, "status_renaming", target_path)
             try:
                 item.path.rename(target_path)
+                if self.write_timestamps:
+                    apply_file_times_only(target_path, item.timestamp)
                 item.path = target_path
                 item.rel_path = _relative_path(target_path, item.source_root)
                 item.target_name = target_path.name
                 success += 1
-                self.row_update.emit(index, "status_renamed", target_path)
+                status = "status_renamed_timestamped" if self.write_timestamps else "status_renamed"
+                self.row_update.emit(index, status, target_path)
             except Exception as exc:
                 failed += 1
                 self.row_update.emit(index, f"status_failed|{str(exc)[:36]}", target_path)
@@ -598,8 +626,11 @@ class MainWindow(FramelessMainWindow):
         self.require_reference_match_check = CheckBox(self.tr("require_reference_match"), self)
         self.require_reference_match_check.setChecked(True)
         self.require_reference_match_check.toggled.connect(self._on_match_option_changed)
+        self.write_timestamps_check = CheckBox(self.tr("write_timestamps"), self)
+        self.write_timestamps_check.setChecked(False)
         option_row.addWidget(self.include_subdirs_check)
         option_row.addWidget(self.require_reference_match_check)
+        option_row.addWidget(self.write_timestamps_check)
         option_row.addStretch(1)
         option_layout.addLayout(option_row)
 
@@ -798,6 +829,7 @@ class MainWindow(FramelessMainWindow):
             "target_dir": self.target_edit.text().strip(),
             "include_subdirs": self.include_subdirs_check.isChecked(),
             "require_reference_match": self.require_reference_match_check.isChecked(),
+            "write_timestamps": self.write_timestamps_check.isChecked(),
         }
 
     def _save_settings(self):
@@ -817,6 +849,7 @@ class MainWindow(FramelessMainWindow):
         self.target_edit.editingFinished.connect(self._save_settings)
         self.include_subdirs_check.toggled.connect(lambda _checked=False: self._save_settings())
         self.require_reference_match_check.toggled.connect(lambda _checked=False: self._save_settings())
+        self.write_timestamps_check.toggled.connect(lambda _checked=False: self._save_settings())
 
     def _load_settings(self):
         if not self._settings_path.exists():
@@ -845,6 +878,7 @@ class MainWindow(FramelessMainWindow):
                 self.target_edit.setText(target_dir)
             self.include_subdirs_check.setChecked(bool(data.get("include_subdirs", True)))
             self.require_reference_match_check.setChecked(bool(data.get("require_reference_match", True)))
+            self.write_timestamps_check.setChecked(bool(data.get("write_timestamps", False)))
         finally:
             self._suspend_settings_save = False
 
@@ -874,6 +908,7 @@ class MainWindow(FramelessMainWindow):
         self.btn_target.setText(self.tr("choose_target"))
         self.include_subdirs_check.setText(self.tr("scan_subdirs"))
         self.require_reference_match_check.setText(self.tr("require_reference_match"))
+        self.write_timestamps_check.setText(self.tr("write_timestamps"))
         self.reference_drop_hint.setText(self.tr("reference_drop_hint"))
         self.target_drop_hint.setText(self.tr("target_drop_hint"))
         self.reference_table.setHorizontalHeaderLabels(self._reference_headers())
@@ -1194,7 +1229,10 @@ class MainWindow(FramelessMainWindow):
         self._save_settings()
 
         self._process_thread = QThread(self)
-        self._process_worker = ProcessWorker(list(self.file_list))
+        self._process_worker = ProcessWorker(
+            list(self.file_list),
+            write_timestamps=self.write_timestamps_check.isChecked(),
+        )
         self._process_worker.moveToThread(self._process_thread)
         self._process_thread.started.connect(self._process_worker.run)
         self._process_worker.row_update.connect(self._update_row_status)
@@ -1216,7 +1254,12 @@ class MainWindow(FramelessMainWindow):
                 target_path = Path(target_path_obj)
                 item.target_path = target_path
                 item.target_name = target_path.name
-                if status_text in ("status_renamed", "status_already_named"):
+                if status_text in (
+                    "status_renamed",
+                    "status_renamed_timestamped",
+                    "status_already_named",
+                    "status_timestamped",
+                ):
                     item.path = target_path
                     item.rel_path = _relative_path(target_path, item.source_root)
                 self.table.setItem(row, 0, QTableWidgetItem(str(item.rel_path)))
