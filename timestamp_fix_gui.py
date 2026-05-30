@@ -577,70 +577,59 @@ def _find_exiftool() -> str | None:
     return None
 
 
-def _exif_datetime_text(timestamp: float) -> str:
-    return datetime.fromtimestamp(timestamp).strftime("%Y:%m:%d %H:%M:%S")
+def _batch_exiftool_supported_exts() -> tuple[str, ...]:
+    return tuple(sorted({suffix.lstrip(".") for suffix in SUPPORTED_SUFFIXES}))
 
 
-def _quicktime_datetime_text(timestamp: float) -> str:
-    # ExifTool accepts timezone-qualified local time for QuickTime date fields.
-    return datetime.fromtimestamp(timestamp).astimezone().strftime("%Y:%m:%d %H:%M:%S%z")
-
-
-def _write_media_timestamps(path: Path, timestamp: float) -> bool:
+def _apply_batch_exiftool(source_root: Path) -> bool:
     exiftool = _find_exiftool()
     if exiftool is None:
         return False
 
-    suffix = path.suffix.lower()
-    if suffix in IMAGE_SUFFIXES:
-        dt = _exif_datetime_text(timestamp)
-        args = [
-            exiftool,
-            "-overwrite_original",
-            "-P",
-            f"-AllDates={dt}",
-            f"-FileCreateDate={dt}",
-            f"-FileModifyDate={dt}",
-            f"-XMP:CreateDate={dt}",
-            f"-XMP:ModifyDate={dt}",
-            f"-XMP:DateTimeOriginal={dt}",
-            str(path),
-        ]
-    elif suffix in VIDEO_SUFFIXES:
-        dt = _quicktime_datetime_text(timestamp)
-        args = [
-            exiftool,
-            "-overwrite_original",
-            "-P",
-            "-api",
-            "QuickTimeUTC=1",
-            f"-CreateDate={dt}",
-            f"-ModifyDate={dt}",
-            f"-MediaCreateDate={dt}",
-            f"-MediaModifyDate={dt}",
-            f"-TrackCreateDate={dt}",
-            f"-TrackModifyDate={dt}",
-            f"-FileCreateDate={dt}",
-            f"-FileModifyDate={dt}",
-            str(path),
-        ]
-    else:
+    root = _safe_resolve(source_root)
+    if not root.is_dir():
         return False
+
+    args = [
+        exiftool,
+        "-api",
+        "QuickTimeUTC=1",
+        "-AllDates<FileModifyDate",
+        "-FileCreateDate<FileModifyDate",
+        "-AllDates<FileCreateDate",
+        "-FileModifyDate<FileCreateDate",
+        "-AllDates<TrackCreateDate",
+        "-FileCreateDate<TrackCreateDate",
+        "-FileModifyDate<TrackCreateDate",
+        "-AllDates<MediaCreateDate",
+        "-FileCreateDate<MediaCreateDate",
+        "-FileModifyDate<MediaCreateDate",
+        "-AllDates<CreateDate",
+        "-FileCreateDate<CreateDate",
+        "-FileModifyDate<CreateDate",
+        "-AllDates<DateTimeOriginal",
+        "-FileCreateDate<DateTimeOriginal",
+        "-FileModifyDate<DateTimeOriginal",
+        "-overwrite_original",
+    ]
+    for ext in _batch_exiftool_supported_exts():
+        args.extend(["-ext", ext])
+    args.extend(["-r", "."])
 
     result = subprocess.run(
         args,
-        capture_output=True,
+        cwd=str(root),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         timeout=EXIFTOOL_TIMEOUT_SECONDS,
         startupinfo=_startupinfo(),
     )
     return result.returncode == 0
 
 
-def apply_file_timestamps(path: Path, timestamp: float) -> bool:
-    media_written = _write_media_timestamps(path, timestamp)
+def apply_file_times_only(path: Path, timestamp: float) -> None:
     os.utime(path, (timestamp, timestamp))
     _set_windows_file_times(path, timestamp)
-    return media_written
 
 
 def _make_item(file_path: Path, source_root: Path | None) -> TimestampItem:
@@ -701,6 +690,10 @@ class ProcessWorker(QObject):
         failed = 0
         skipped = 0
         total = len(self.items)
+        source_roots: set[Path] = set()
+        for item in self.items:
+            if item.source_root is not None:
+                source_roots.add(item.source_root)
 
         for index, item in enumerate(self.items):
             progress_percent = int(((index + 1) / total) * 100) if total else 0
@@ -712,14 +705,24 @@ class ProcessWorker(QObject):
 
             self.row_update.emit(index, "status_fixing")
             try:
-                media_written = apply_file_timestamps(item.path, item.timestamp)
+                apply_file_times_only(item.path, item.timestamp)
                 success += 1
-                self.row_update.emit(index, "status_fixed" if media_written else "status_fixed_file_only")
+                self.row_update.emit(index, "status_fixed_file_only")
             except Exception as exc:
                 failed += 1
                 self.row_update.emit(index, f"status_failed|{str(exc)[:36]}")
 
             self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
+
+        media_written = False
+        for source_root in sorted(source_roots, key=lambda path: str(path)):
+            media_written = _apply_batch_exiftool(source_root) or media_written
+
+        if media_written:
+            for index, item in enumerate(self.items):
+                if item.status == "status_fixed_file_only":
+                    item.status = "status_fixed"
+                    self.row_update.emit(index, "status_fixed")
 
         self.finished.emit({"success": success, "failed": failed, "skipped": skipped})
 
