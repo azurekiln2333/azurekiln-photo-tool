@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 from main_gui import MainWindow as FlymeFixWindow
 from merge_live_photo_gui import MainWindow as MergeLivePhotoWindow
 from split_huawei_live_photo_gui import MainWindow as SplitHuaweiWindow
+from timestamp_fix_gui import MainWindow as TimestampFixWindow
 
 
 APP_TITLE = "AzureKiln Photo Tool"
@@ -79,6 +80,19 @@ TRANSLATIONS = {
         "open_github": "Open GitHub",
     },
 }
+
+TRANSLATIONS["zh"].update(
+    {
+        "timestamp": "照片时间戳修复",
+        "timestamp_settings": "照片时间戳修复设置",
+    }
+)
+TRANSLATIONS["en"].update(
+    {
+        "timestamp": "Fix Photo Timestamps",
+        "timestamp_settings": "Photo Timestamp Fix Settings",
+    }
+)
 
 
 def _import_fluent():
@@ -265,7 +279,7 @@ class SettingsPage(QWidget):
         self._button_groups.append(group)
 
     def _build_feature_settings(self, layout: QVBoxLayout):
-        merge, split, flyme = self.feature_windows
+        merge, split, flyme, timestamp = self.feature_windows
 
         merge_layout = self._new_card("merge_settings", layout)
         self._section(merge_layout, "scan_settings")
@@ -304,6 +318,10 @@ class SettingsPage(QWidget):
         )
         flyme_layout.addWidget(flyme.output_settings_note)
         flyme.output_settings_note.show()
+
+        timestamp_layout = self._new_card("timestamp_settings", layout)
+        self._section(timestamp_layout, "scan_settings")
+        self._row(timestamp_layout, timestamp.include_subdirs_check)
 
     def set_language(self, lang: str):
         text = TRANSLATIONS[lang]
@@ -402,11 +420,13 @@ class UnifiedMainWindow(FluentWindow):
             MergeLivePhotoWindow(self, embedded=True),
             SplitHuaweiWindow(self, embedded=True),
             FlymeFixWindow(self, embedded=True),
+            TimestampFixWindow(self, embedded=True),
         ]
         self.pages = [
             EmbeddedPage("merge", self._feature_windows[0], self),
             EmbeddedPage("split", self._feature_windows[1], self),
             EmbeddedPage("flyme", self._feature_windows[2], self),
+            EmbeddedPage("timestamp", self._feature_windows[3], self),
         ]
         self.about_page = AboutPage(self)
         self.settings_page = SettingsPage(self._feature_windows, self)
@@ -427,6 +447,12 @@ class UnifiedMainWindow(FluentWindow):
             self.pages[2],
             _pick_icon("DEVELOPER_TOOLS", "SYNC", "UPDATE"),
             TRANSLATIONS[self.lang]["flyme"],
+            NavigationItemPosition.TOP,
+        )
+        self.timestamp_item = self.addSubInterface(
+            self.pages[3],
+            _pick_icon("CALENDAR", "HISTORY", "CLOCK"),
+            TRANSLATIONS[self.lang]["timestamp"],
             NavigationItemPosition.TOP,
         )
         self.about_item = self.addSubInterface(
@@ -551,6 +577,8 @@ class UnifiedMainWindow(FluentWindow):
         self.split_item.setToolTip(text["split"])
         self.flyme_item.setText(text["flyme"])
         self.flyme_item.setToolTip(text["flyme"])
+        self.timestamp_item.setText(text["timestamp"])
+        self.timestamp_item.setToolTip(text["timestamp"])
         self.about_item.setText(text["about"])
         self.about_item.setToolTip(text["about"])
         self.settings_item.setText(text["settings"])
