@@ -900,7 +900,9 @@ class MainWindow(FramelessMainWindow):
                 status_item.setText(self._display_status(item.status))
 
     def eventFilter(self, obj, event):
-        if obj in (self.reference_table.viewport(), self.table.viewport()):
+        reference_viewport = self.reference_table.viewport() if hasattr(self, "reference_table") else None
+        target_viewport = self.table.viewport() if hasattr(self, "table") else None
+        if obj is reference_viewport or obj is target_viewport:
             if event.type() == QEvent.Type.DragEnter:
                 if event.mimeData().hasUrls():
                     event.acceptProposedAction()
@@ -912,7 +914,7 @@ class MainWindow(FramelessMainWindow):
             if event.type() == QEvent.Type.Drop:
                 paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
                 if paths:
-                    if obj is self.reference_table.viewport():
+                    if obj is reference_viewport:
                         self.add_reference_paths(paths)
                     else:
                         self.add_target_paths(paths)
