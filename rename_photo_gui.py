@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sys
@@ -57,6 +58,14 @@ from timestamp_fix_gui import (
 APP_NAME = "RenamePhotoGUI"
 VIDEO_RENAME_SUFFIXES = (".mp4", ".mov")
 SUPPORTED_RENAME_SUFFIXES = IMAGE_SUFFIXES + VIDEO_RENAME_SUFFIXES
+COMPLETED_STATUSES = {
+    "status_renamed",
+    "status_renamed_timestamped",
+    "status_already_named",
+    "status_timestamped",
+}
+PROCESSABLE_STATUSES = {"status_pending"}
+TIMESTAMP_PROCESSABLE_STATUSES = PROCESSABLE_STATUSES | {"status_already_named"}
 TRANSLATIONS = {
     "zh": {
         "app_title": "照片重命名",
@@ -211,6 +220,8 @@ TRANSLATIONS["zh"].update(
         "scan_reference_none_status": "未找到原始照片或视频",
         "scan_target_none_status": "未找到待重命名照片或视频",
         "cannot_start_content": "请先添加待重命名照片或视频。",
+        "no_pending_title": "没有新的待处理文件",
+        "no_pending_content": "列表里没有新的待处理照片或视频；已符合命名规则的文件会自动跳过，如需补写时间戳请勾选写入文件时间戳。",
         "task_done_message": "照片/视频重命名完成。\n\n成功: {success}\n失败: {failed}\n跳过: {skipped}",
         "write_timestamps": "写入文件时间戳",
         "status_renamed_timestamped": "已重命名并写入时间戳",
@@ -232,6 +243,8 @@ TRANSLATIONS["en"].update(
         "scan_reference_none_status": "No original photos or videos found",
         "scan_target_none_status": "No target photos or videos found",
         "cannot_start_content": "Add target photos or videos to rename first.",
+        "no_pending_title": "No new pending files",
+        "no_pending_content": "There are no new pending photos or videos. Already named files are skipped unless timestamp writing is enabled.",
         "task_done_message": "Photo/video rename complete.\n\nRenamed: {success}\nFailed: {failed}\nSkipped: {skipped}",
         "write_timestamps": "Write file timestamps",
         "status_renamed_timestamped": "Renamed and timestamped",
@@ -263,6 +276,7 @@ class RenameItem:
     target_name: str = ""
     target_path: Path | None = None
     status: str = "status_pending"
+    row_index: int = -1
 
 
 @dataclass
@@ -322,6 +336,17 @@ def _target_filename(path: Path, timestamp: float, index: int = 0) -> str:
     if index:
         stem = f"{stem}_{index:03d}"
     return f"{stem}{path.suffix.lower()}"
+
+
+def _is_generated_target_name(path: Path, timestamp: float) -> bool:
+    expected_stem = _target_stem(path, timestamp)
+    stem = path.stem
+    if stem == expected_stem:
+        return True
+    if not stem.startswith(f"{expected_stem}_"):
+        return False
+    suffix = stem[len(expected_stem) + 1 :]
+    return len(suffix) == 3 and suffix.isdigit()
 
 
 def _is_same_path(left: Path, right: Path) -> bool:
@@ -423,6 +448,8 @@ def _find_reference_match(item: RenameItem, index: ReferenceIndex) -> ReferenceI
 def _unique_target_path(item: RenameItem, reserved: set[Path]) -> Path | None:
     if item.timestamp is None:
         return None
+    if _is_generated_target_name(item.path, item.timestamp):
+        return item.path
 
     for index in range(10000):
         candidate = item.path.with_name(_target_filename(item.path, item.timestamp, index))
@@ -513,13 +540,14 @@ class ProcessWorker(QObject):
         _assign_target_paths(self.items)
 
         for index, item in enumerate(self.items):
+            row_index = item.row_index if item.row_index >= 0 else index
             progress_percent = int(((index + 1) / total) * 100) if total else 0
             target_path = item.target_path
 
             if item.timestamp is None or target_path is None:
                 skipped += 1
                 status = item.status if item.status == "status_no_reference_match" else "status_skipped"
-                self.row_update.emit(index, status, None)
+                self.row_update.emit(row_index, status, None)
                 self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                 continue
 
@@ -527,17 +555,17 @@ class ProcessWorker(QObject):
                 try:
                     if self.write_timestamps:
                         apply_file_times_only(item.path, item.timestamp)
-                        self.row_update.emit(index, "status_timestamped", target_path)
+                        self.row_update.emit(row_index, "status_timestamped", target_path)
                     else:
-                        self.row_update.emit(index, "status_already_named", target_path)
+                        self.row_update.emit(row_index, "status_already_named", target_path)
                     skipped += 1
                 except Exception as exc:
                     failed += 1
-                    self.row_update.emit(index, f"status_failed|{str(exc)[:36]}", target_path)
+                    self.row_update.emit(row_index, f"status_failed|{str(exc)[:36]}", target_path)
                 self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                 continue
 
-            self.row_update.emit(index, "status_renaming", target_path)
+            self.row_update.emit(row_index, "status_renaming", target_path)
             try:
                 item.path.rename(target_path)
                 if self.write_timestamps:
@@ -547,10 +575,10 @@ class ProcessWorker(QObject):
                 item.target_name = target_path.name
                 success += 1
                 status = "status_renamed_timestamped" if self.write_timestamps else "status_renamed"
-                self.row_update.emit(index, status, target_path)
+                self.row_update.emit(row_index, status, target_path)
             except Exception as exc:
                 failed += 1
-                self.row_update.emit(index, f"status_failed|{str(exc)[:36]}", target_path)
+                self.row_update.emit(row_index, f"status_failed|{str(exc)[:36]}", target_path)
 
             self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
 
@@ -1275,25 +1303,52 @@ class MainWindow(FramelessMainWindow):
         index = _build_reference_index(self.reference_list)
         require_match = self.require_reference_match_check.isChecked()
         for item in self.file_list:
+            previous_status = item.status
+            if (
+                previous_status in COMPLETED_STATUSES
+                and item.timestamp is not None
+                and _is_generated_target_name(item.path, item.timestamp)
+            ):
+                item.status = previous_status
+                continue
+
             matched = _find_reference_match(item, index)
             if matched is not None:
                 item.timestamp = matched.timestamp
                 item.source = "source_reference"
                 item.match_mode = "reference"
                 item.matched_reference = str(matched.rel_path)
-                item.status = "status_pending"
             elif require_match:
-                item.timestamp = None
-                item.source = "source_unknown"
-                item.match_mode = "none"
-                item.matched_reference = ""
-                item.status = "status_no_reference_match"
+                if item.own_timestamp is not None and _is_generated_target_name(item.path, item.own_timestamp):
+                    item.timestamp = item.own_timestamp
+                    item.source = item.own_source
+                    item.match_mode = "self"
+                    item.matched_reference = ""
+                    item.status = "status_already_named"
+                else:
+                    item.timestamp = None
+                    item.source = "source_unknown"
+                    item.match_mode = "none"
+                    item.matched_reference = ""
+                    item.status = "status_no_reference_match"
+                continue
             else:
                 item.timestamp = item.own_timestamp
                 item.source = item.own_source
                 item.match_mode = "self" if item.own_timestamp is not None else "none"
                 item.matched_reference = ""
-                item.status = "status_pending" if item.own_timestamp is not None else "status_skipped"
+                if item.own_timestamp is None:
+                    item.status = "status_skipped"
+                    continue
+
+            if item.timestamp is None:
+                item.status = "status_skipped"
+            elif previous_status in COMPLETED_STATUSES and _is_generated_target_name(item.path, item.timestamp):
+                item.status = previous_status
+            elif _is_generated_target_name(item.path, item.timestamp):
+                item.status = "status_already_named"
+            else:
+                item.status = "status_pending"
         _assign_target_paths(self.file_list)
         self._rebuild_target_table()
 
@@ -1302,6 +1357,21 @@ class MainWindow(FramelessMainWindow):
             return
         if not self.file_list:
             self._notify(self.tr("cannot_start_title"), self.tr("cannot_start_content"), is_error=True)
+            return
+
+        processable_statuses = (
+            TIMESTAMP_PROCESSABLE_STATUSES if self.write_timestamps_check.isChecked() else PROCESSABLE_STATUSES
+        )
+        pending_items: list[RenameItem] = []
+        for row, item in enumerate(self.file_list):
+            if item.status not in processable_statuses:
+                continue
+            item_for_run = copy.copy(item)
+            item_for_run.row_index = row
+            pending_items.append(item_for_run)
+
+        if not pending_items:
+            self._notify(self.tr("no_pending_title"), self.tr("no_pending_content"), is_error=True)
             return
 
         self.is_processing = True
@@ -1319,7 +1389,7 @@ class MainWindow(FramelessMainWindow):
 
         self._process_thread = QThread(self)
         self._process_worker = ProcessWorker(
-            list(self.file_list),
+            pending_items,
             write_timestamps=self.write_timestamps_check.isChecked(),
         )
         self._process_worker.moveToThread(self._process_thread)
