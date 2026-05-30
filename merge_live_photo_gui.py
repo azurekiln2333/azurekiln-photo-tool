@@ -74,6 +74,8 @@ TASK_KIND_LIVE = "task_kind_live"
 TASK_KIND_STATIC = "task_kind_static"
 TASK_KIND_VIDEO = "task_kind_video"
 TASK_KIND_OTHER = "task_kind_other"
+TASK_ROW_INDEX_KEY = "_row_index"
+PROCESSABLE_STATUSES = {"status_pending", "status_missing_heif"}
 EXTRA_TRANSLATIONS = {
     "zh": {
         "output_dir": "汇总输出目录",
@@ -101,6 +103,8 @@ EXTRA_TRANSLATIONS = {
         "scan_none_content": "所选目录中未找到可处理文件",
         "scan_done_status": "共扫描到 {count} 个文件，准备就绪",
         "scan_done_content": "共找到 {count} 个文件",
+        "no_pending_title": "没有新的待处理文件",
+        "no_pending_content": "列表里没有新的待处理文件；如需重新处理旧文件，请重新扫描或清空列表后再添加。",
         "task_done_message": (
             "任务结束，统计如下：\n\n"
             "LivePhoto 合并成功: {success}\n"
@@ -142,6 +146,8 @@ EXTRA_TRANSLATIONS = {
         "scan_none_content": "No processable files found in the selected folder",
         "scan_done_status": "Scanned {count} file(s), ready",
         "scan_done_content": "Found {count} file(s)",
+        "no_pending_title": "No new pending files",
+        "no_pending_content": "There are no new pending files. Rescan or clear the list to process old files again.",
         "task_done_message": (
             "Task finished. Summary:\n\n"
             "LivePhotos merged: {success}\n"
@@ -660,6 +666,7 @@ class ProcessWorker(QObject):
         summary_failed = 0
 
         for index, task in enumerate(self.tasks):
+            row_index = task.get(TASK_ROW_INDEX_KEY, index)
             task_kind = task.get("kind", TASK_KIND_STATIC)
             file_path = task.get("path")
             img_path = task["img_path"]
@@ -677,24 +684,24 @@ class ProcessWorker(QObject):
                         dest_file.parent.mkdir(parents=True, exist_ok=True)
                         if dest_file.exists() and self.options["other_exist_action"] == "skip":
                             other_exist_skip_count += 1
-                            self.row_update.emit(index, "status_other_exists")
+                            self.row_update.emit(row_index, "status_other_exists")
                         else:
                             shutil.copy2(file_path, dest_file)
                             other_copy_count += 1
                             summary_success += 1
-                            self.row_update.emit(index, "status_other_copied")
+                            self.row_update.emit(row_index, "status_other_copied")
                     except Exception as exc:
                         fail_count += 1
                         summary_failed += 1
-                        self.row_update.emit(index, f"status_other_failed|{str(exc)[:28]}")
+                        self.row_update.emit(row_index, f"status_other_failed|{str(exc)[:28]}")
                 else:
-                    self.row_update.emit(index, "status_other_skipped")
+                    self.row_update.emit(row_index, "status_other_skipped")
                 self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                 continue
 
             if is_heic_error:
                 error_skip_count += 1
-                self.row_update.emit(index, "status_skip_missing_heif")
+                self.row_update.emit(row_index, "status_skip_missing_heif")
                 self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                 continue
 
@@ -707,7 +714,7 @@ class ProcessWorker(QObject):
 
                     if target_static_file.exists() and self.options["static_exist_action"] == "skip":
                         static_exist_skip_count += 1
-                        self.row_update.emit(index, "status_static_exists")
+                        self.row_update.emit(row_index, "status_static_exists")
                     else:
                         if convert_to_jpg:
                             img = Image.open(img_path)
@@ -723,7 +730,7 @@ class ProcessWorker(QObject):
                             status_text = "status_static_copied"
 
                         static_copy_count += 1
-                        self.row_update.emit(index, status_text)
+                        self.row_update.emit(row_index, status_text)
                     if self.options["summary_static"]:
                         try:
                             dest_file = summary_out_path / final_rel_path
@@ -735,7 +742,7 @@ class ProcessWorker(QObject):
                             summary_failed += 1
                 except Exception as exc:
                     fail_count += 1
-                    self.row_update.emit(index, f"status_static_failed|{str(exc)[:28]}")
+                    self.row_update.emit(row_index, f"status_static_failed|{str(exc)[:28]}")
             else:
                 final_rel_path = rel_path.with_suffix(".jpg")
                 output_file = out_path / final_rel_path
@@ -743,18 +750,18 @@ class ProcessWorker(QObject):
 
                 if output_file.exists() and self.options["live_exist_action"] == "skip":
                     live_exist_skip_count += 1
-                    self.row_update.emit(index, "status_live_exists")
+                    self.row_update.emit(row_index, "status_live_exists")
                 else:
-                    self.row_update.emit(index, "status_merging")
+                    self.row_update.emit(row_index, "status_merging")
                     try:
                         make_live_photo(str(img_path), str(mp4_path), str(output_file))
                         _apply_output_timestamp(output_file, img_path)
 
                         success_count += 1
-                        self.row_update.emit(index, "status_merge_success")
+                        self.row_update.emit(row_index, "status_merge_success")
                     except Exception as exc:
                         fail_count += 1
-                        self.row_update.emit(index, f"status_merge_failed|{str(exc)[:28]}")
+                        self.row_update.emit(row_index, f"status_merge_failed|{str(exc)[:28]}")
                         self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                         continue
 
@@ -1508,6 +1515,18 @@ class MainWindow(FramelessMainWindow):
             )
             return
 
+        pending_tasks: list[dict] = []
+        for row, task in enumerate(self.file_list):
+            if task.get("status") not in PROCESSABLE_STATUSES:
+                continue
+            task_for_run = dict(task)
+            task_for_run[TASK_ROW_INDEX_KEY] = row
+            pending_tasks.append(task_for_run)
+
+        if not pending_tasks:
+            self._notify(self.tr("no_pending_title"), self.tr("no_pending_content"), is_error=True)
+            return
+
         self.is_processing = True
         self.btn_start.setEnabled(False)
         self.btn_scan.setEnabled(False)
@@ -1529,7 +1548,7 @@ class MainWindow(FramelessMainWindow):
         }
 
         self._process_thread = QThread(self)
-        self._process_worker = ProcessWorker(list(self.file_list), options)
+        self._process_worker = ProcessWorker(pending_tasks, options)
         self._process_worker.moveToThread(self._process_thread)
         self._process_thread.started.connect(self._process_worker.run)
         self._process_worker.row_update.connect(self._update_row_status)
