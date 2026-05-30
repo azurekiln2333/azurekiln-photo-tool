@@ -33,6 +33,9 @@ from PyQt6.QtWidgets import (
 APP_NAME = "SplitHuaweiLivePhotoGUI"
 IMAGE_SUFFIXES = (".jpg", ".jpeg")
 VIDEO_SUFFIXES = (".mp4",)
+SPLIT_OUTPUT_DIR_NAME = "AzureKiln_HuaweiLivePhotoSplit_Output"
+LEGACY_SPLIT_OUTPUT_DIR_NAMES = ("Split_Output", "HuaweiLivePhotoSplit_Output")
+SPLIT_GENERATED_OUTPUT_DIR_NAMES = {SPLIT_OUTPUT_DIR_NAME, *LEGACY_SPLIT_OUTPUT_DIR_NAMES}
 
 
 def _get_windows_pictures_dir() -> Path | None:
@@ -72,6 +75,54 @@ def _get_settings_path() -> Path:
         if appdata:
             return Path(appdata) / APP_NAME / "settings.json"
     return Path.home() / ".config" / APP_NAME / "settings.json"
+
+
+def _safe_resolve(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except Exception:
+        return path
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _first_source_dir(paths: list[Path]) -> Path | None:
+    first_dir = next((path for path in paths if path.is_dir()), None)
+    if first_dir is not None:
+        return first_dir
+
+    first_file = next((path for path in paths if path.is_file()), None)
+    if first_file is not None:
+        return first_file.parent
+
+    return None
+
+
+def _split_output_dir_for(source_dir: Path) -> Path:
+    return source_dir / SPLIT_OUTPUT_DIR_NAME
+
+
+def _is_generated_output_path(file_path: Path, source_root: Path, explicit_output_dir: Path | None = None) -> bool:
+    resolved_file = _safe_resolve(file_path)
+
+    if explicit_output_dir is not None:
+        resolved_output = _safe_resolve(explicit_output_dir)
+        if resolved_file == resolved_output or _is_relative_to(resolved_file, resolved_output):
+            return True
+
+    resolved_root = _safe_resolve(source_root)
+    try:
+        rel_path = resolved_file.relative_to(resolved_root)
+    except ValueError:
+        return False
+
+    return bool(rel_path.parts and rel_path.parts[0] in SPLIT_GENERATED_OUTPUT_DIR_NAMES)
 
 
 def _import_fluent():
@@ -214,12 +265,8 @@ class ScanWorker(QObject):
         for path in iterator:
             if not _is_image_file(path):
                 continue
-            if self.output_dir is not None:
-                try:
-                    path.resolve().relative_to(self.output_dir)
-                    continue
-                except ValueError:
-                    pass
+            if _is_generated_output_path(path, self.input_dir, self.output_dir):
+                continue
             img_files.append(path)
         img_files = sorted(img_files)
         processable = 0
@@ -691,7 +738,7 @@ class MainWindow(FramelessMainWindow):
 
     def _init_default_output_dir(self):
         pics_dir = _get_windows_pictures_dir() or (Path.home() / "Pictures")
-        base = pics_dir / "HuaweiLivePhotoSplit_Output"
+        base = _split_output_dir_for(pics_dir)
         try:
             base.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -769,8 +816,9 @@ class MainWindow(FramelessMainWindow):
         folder = QFileDialog.getExistingDirectory(self, self.tr("dialog_choose_source"))
         if not folder:
             return
-        self.input_edit.setText(folder)
-        self.output_edit.setText(str(Path(folder) / "Split_Output"))
+        source_dir = Path(folder)
+        self.input_edit.setText(str(source_dir))
+        self.output_edit.setText(str(_split_output_dir_for(source_dir)))
         self._save_settings()
         self.scan_files()
 
@@ -795,19 +843,31 @@ class MainWindow(FramelessMainWindow):
             return
 
         recursive = self.include_subdirs_check.isChecked()
-        existing = {task["img_path"].resolve() for task in self.file_list}
+        source_dir = _first_source_dir(paths)
+        output_dir = _split_output_dir_for(source_dir) if source_dir is not None else None
+        if source_dir is not None and output_dir is not None:
+            self.input_edit.setText(str(source_dir))
+            self.output_edit.setText(str(output_dir))
+            self._save_settings()
+
+        existing = {_safe_resolve(task["img_path"]) for task in self.file_list}
         img_files: list[tuple[Path, Path | None]] = []
 
         for path in paths:
             if path.is_dir():
                 iterator = path.rglob("*") if recursive else path.glob("*")
-                img_files.extend((candidate, path) for candidate in iterator if _is_image_file(candidate))
+                img_files.extend(
+                    (candidate, path)
+                    for candidate in iterator
+                    if _is_image_file(candidate) and not _is_generated_output_path(candidate, path, output_dir)
+                )
             elif _is_image_file(path):
-                img_files.append((path, path.parent))
+                if not _is_generated_output_path(path, path.parent, output_dir):
+                    img_files.append((path, path.parent))
 
         added = 0
         for img_path, base_dir in sorted(img_files, key=lambda item: str(item[0])):
-            resolved = img_path.resolve()
+            resolved = _safe_resolve(img_path)
             if resolved in existing:
                 continue
             self._append_scan_row(_make_task(img_path, base_dir))
@@ -817,15 +877,6 @@ class MainWindow(FramelessMainWindow):
         if added:
             self.progress.setValue(0)
             self._set_status_text("drop_added", added=added, count=len(self.file_list))
-            if not self.input_edit.text().strip():
-                first_dir = next((p for p in paths if p.is_dir()), None)
-                if first_dir is None:
-                    first_file = next((p for p in paths if p.is_file()), None)
-                    first_dir = first_file.parent if first_file is not None else None
-                if first_dir is not None:
-                    self.input_edit.setText(str(first_dir))
-                    self.output_edit.setText(str(first_dir / "Split_Output"))
-                    self._save_settings()
         else:
             self._set_status_text("drop_no_new")
 

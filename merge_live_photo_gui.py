@@ -54,6 +54,16 @@ XMP_IDENTIFIER = b"http://ns.adobe.com/xap/1.0/\x00"
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".heic", ".heif")
 VIDEO_SUFFIXES = (".mp4", ".mov")
 EXIF_TIMESTAMP_TAGS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
+SUMMARY_OUTPUT_DIR_NAME = "AzureKiln_MotionPhoto_Summary_Output"
+LEGACY_SUMMARY_OUTPUT_DIR_NAMES = ("Summary_Output", "MergeLivePhoto_Summary", "All_Processed_Summary")
+LIVE_OUTPUT_DIR_NAME = "MotionPhotosOutput"
+STATIC_OUTPUT_DIR_NAME = "Static_Photos"
+GENERATED_OUTPUT_DIR_NAMES = {
+    SUMMARY_OUTPUT_DIR_NAME,
+    *LEGACY_SUMMARY_OUTPUT_DIR_NAMES,
+    LIVE_OUTPUT_DIR_NAME,
+    STATIC_OUTPUT_DIR_NAME,
+}
 TASK_KIND_LIVE = "task_kind_live"
 TASK_KIND_STATIC = "task_kind_static"
 TASK_KIND_VIDEO = "task_kind_video"
@@ -181,6 +191,54 @@ def _get_settings_path() -> Path:
         if appdata:
             return Path(appdata) / APP_NAME / "settings.json"
     return Path.home() / ".config" / APP_NAME / "settings.json"
+
+
+def _safe_resolve(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except Exception:
+        return path
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _summary_output_dir_for(source_dir: Path) -> Path:
+    return source_dir / SUMMARY_OUTPUT_DIR_NAME
+
+
+def _first_source_dir(paths: list[Path]) -> Path | None:
+    first_dir = next((path for path in paths if path.is_dir()), None)
+    if first_dir is not None:
+        return first_dir
+
+    first_file = next((path for path in paths if path.is_file()), None)
+    if first_file is not None:
+        return first_file.parent
+
+    return None
+
+
+def _is_generated_output_path(file_path: Path, source_root: Path, explicit_output_dir: Path | None = None) -> bool:
+    resolved_file = _safe_resolve(file_path)
+
+    if explicit_output_dir is not None:
+        resolved_output = _safe_resolve(explicit_output_dir)
+        if resolved_file == resolved_output or _is_relative_to(resolved_file, resolved_output):
+            return True
+
+    resolved_root = _safe_resolve(source_root)
+    try:
+        rel_path = resolved_file.relative_to(resolved_root)
+    except ValueError:
+        return False
+
+    return bool(rel_path.parts and rel_path.parts[0] in GENERATED_OUTPUT_DIR_NAMES)
 
 
 def _capture_timestamp_from_image(img_path: Path) -> float | None:
@@ -502,15 +560,20 @@ class ScanWorker(QObject):
     row_ready = pyqtSignal(dict)
     finished = pyqtSignal(int)
 
-    def __init__(self, input_dir: Path, recursive: bool):
+    def __init__(self, input_dir: Path, recursive: bool, output_dir: Path | None = None):
         super().__init__()
         self.input_dir = input_dir
         self.recursive = recursive
+        self.output_dir = output_dir
 
     def run(self):
         all_files_set: set[Path] = set()
         iterator = self.input_dir.rglob("*") if self.recursive else self.input_dir.glob("*")
-        all_files_set.update(path for path in iterator if path.is_file())
+        all_files_set.update(
+            path
+            for path in iterator
+            if path.is_file() and not _is_generated_output_path(path, self.input_dir, self.output_dir)
+        )
 
         paired_videos: set[Path] = set()
         tasks: list[dict] = []
@@ -557,8 +620,8 @@ class ProcessWorker(QObject):
         summary_out_path.mkdir(parents=True, exist_ok=True)
 
         base_path = summary_out_path if summary_out_path.parent == summary_out_path else summary_out_path.parent
-        out_path = base_path / "MotionPhotosOutput"
-        static_out_path = base_path / "Static_Photos"
+        out_path = base_path / LIVE_OUTPUT_DIR_NAME
+        static_out_path = base_path / STATIC_OUTPUT_DIR_NAME
 
         out_path.mkdir(parents=True, exist_ok=True)
         static_out_path.mkdir(parents=True, exist_ok=True)
@@ -1159,7 +1222,7 @@ class MainWindow(FramelessMainWindow):
 
     def _init_default_output_dir(self):
         pics_dir = _get_windows_pictures_dir() or (Path.home() / "Pictures")
-        base = pics_dir / "MergeLivePhoto_Summary"
+        base = _summary_output_dir_for(pics_dir)
         try:
             base.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -1252,8 +1315,9 @@ class MainWindow(FramelessMainWindow):
         folder = QFileDialog.getExistingDirectory(self, self.tr("dialog_choose_source"))
         if not folder:
             return
-        self.input_edit.setText(folder)
-        self.output_edit.setText(str(Path(folder) / "Summary_Output"))
+        source_dir = Path(folder)
+        self.input_edit.setText(str(source_dir))
+        self.output_edit.setText(str(_summary_output_dir_for(source_dir)))
         self._save_settings()
         self.scan_files()
 
@@ -1281,15 +1345,27 @@ class MainWindow(FramelessMainWindow):
             return
 
         recursive = self.include_subdirs_check.isChecked()
-        existing = {task["path"].resolve() for task in self.file_list if task.get("path") is not None}
+        source_dir = _first_source_dir(paths)
+        output_dir = _summary_output_dir_for(source_dir) if source_dir is not None else None
+        if source_dir is not None and output_dir is not None:
+            self.input_edit.setText(str(source_dir))
+            self.output_edit.setText(str(output_dir))
+            self._save_settings()
+
+        existing = {_safe_resolve(task["path"]) for task in self.file_list if task.get("path") is not None}
         all_files: list[tuple[Path, Path | None]] = []
 
         for path in paths:
             if path.is_dir():
                 iterator = path.rglob("*") if recursive else path.glob("*")
-                all_files.extend((candidate, path) for candidate in iterator if candidate.is_file())
+                all_files.extend(
+                    (candidate, path)
+                    for candidate in iterator
+                    if candidate.is_file() and not _is_generated_output_path(candidate, path, output_dir)
+                )
             elif path.is_file():
-                all_files.append((path, path.parent))
+                if not _is_generated_output_path(path, path.parent, output_dir):
+                    all_files.append((path, path.parent))
 
         paired_videos: set[Path] = set()
         tasks: list[dict] = []
@@ -1317,7 +1393,7 @@ class MainWindow(FramelessMainWindow):
 
         added = 0
         for task in sorted(tasks, key=lambda item: str(item["rel_path"])):
-            resolved = task["path"].resolve()
+            resolved = _safe_resolve(task["path"])
             if resolved in existing:
                 continue
             self._append_scan_row(task)
@@ -1327,15 +1403,6 @@ class MainWindow(FramelessMainWindow):
         if added:
             self.progress.setValue(0)
             self._set_status_text("drop_added", added=added, count=len(self.file_list))
-            if not self.input_edit.text().strip():
-                first_dir = next((p for p in paths if p.is_dir()), None)
-                if first_dir is None:
-                    first_file = next((p for p in paths if p.is_file()), None)
-                    first_dir = first_file.parent if first_file is not None else None
-                if first_dir is not None:
-                    self.input_edit.setText(str(first_dir))
-                    self.output_edit.setText(str(first_dir / "Summary_Output"))
-                    self._save_settings()
         else:
             self._set_status_text("drop_no_new")
 
@@ -1358,7 +1425,9 @@ class MainWindow(FramelessMainWindow):
         self._save_settings()
 
         self._scan_thread = QThread(self)
-        self._scan_worker = ScanWorker(input_dir, self.include_subdirs_check.isChecked())
+        output_dir_text = self.output_edit.text().strip()
+        output_dir = Path(output_dir_text) if output_dir_text else None
+        self._scan_worker = ScanWorker(input_dir, self.include_subdirs_check.isChecked(), output_dir)
         self._scan_worker.moveToThread(self._scan_thread)
         self._scan_thread.started.connect(self._scan_worker.run)
         self._scan_worker.row_ready.connect(self._append_scan_row)

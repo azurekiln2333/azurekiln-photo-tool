@@ -45,6 +45,9 @@ from PyQt6.QtWidgets import (
 
 QT_BINDING = "PyQt6"
 APP_NAME = "FlymeLivePhotoFix"
+FLYME_OUTPUT_DIR_NAME = "AzureKiln_FlymeLivePhotoFix_Output"
+LEGACY_FLYME_OUTPUT_DIR_NAMES = ("FlymeLivePhotoFix_output",)
+FLYME_GENERATED_OUTPUT_DIR_NAMES = {FLYME_OUTPUT_DIR_NAME, *LEGACY_FLYME_OUTPUT_DIR_NAMES}
 
 if sys.platform == "win32":
     import win32con  # type: ignore
@@ -91,22 +94,78 @@ def _get_settings_path() -> Path:
     return Path.home() / ".config" / APP_NAME / "settings.json"
 
 
+def _safe_resolve(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except Exception:
+        return path
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _first_source_dir(paths: list[Path]) -> Path | None:
+    first_dir = next((path for path in paths if path.is_dir()), None)
+    if first_dir is not None:
+        return first_dir
+
+    first_file = next((path for path in paths if path.is_file()), None)
+    if first_file is not None:
+        return first_file.parent
+
+    return None
+
+
+def _flyme_output_dir_for(source_dir: Path) -> Path:
+    return source_dir / FLYME_OUTPUT_DIR_NAME
+
+
+def _is_generated_output_path(file_path: Path, source_root: Path, explicit_output_dir: Path | None = None) -> bool:
+    resolved_file = _safe_resolve(file_path)
+
+    if explicit_output_dir is not None:
+        resolved_output = _safe_resolve(explicit_output_dir)
+        if resolved_file == resolved_output or _is_relative_to(resolved_file, resolved_output):
+            return True
+
+    resolved_root = _safe_resolve(source_root)
+    try:
+        rel_path = resolved_file.relative_to(resolved_root)
+    except ValueError:
+        return False
+
+    return bool(rel_path.parts and rel_path.parts[0] in FLYME_GENERATED_OUTPUT_DIR_NAMES)
+
+
 class DropScanWorker(QObject):
     batch_ready = pyqtSignal(object)
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal(int, int)
 
-    def __init__(self, paths: list[Path], existing: set[Path], scan_subdirs: bool = True):
+    def __init__(
+        self,
+        paths: list[Path],
+        existing: set[Path],
+        scan_subdirs: bool = True,
+        output_dir: Path | None = None,
+    ):
         super().__init__()
         self.paths = paths
         self.existing = existing
         self.scan_subdirs = scan_subdirs
+        self.output_dir = output_dir
 
     def _iter_files(self) -> list[tuple[Path, Path | None]]:
         files: list[tuple[Path, Path | None]] = []
         for p in self.paths:
             if p.is_file():
-                files.append((p, p.parent))
+                if not _is_generated_output_path(p, p.parent, self.output_dir):
+                    files.append((p, p.parent))
                 continue
             if not p.is_dir():
                 continue
@@ -115,10 +174,12 @@ class DropScanWorker(QObject):
                     for root, _dirs, names in os.walk(p):
                         base = Path(root)
                         for name in names:
-                            files.append((base / name, p))
+                            file_path = base / name
+                            if not _is_generated_output_path(file_path, p, self.output_dir):
+                                files.append((file_path, p))
                 else:
                     for child in p.iterdir():
-                        if child.is_file():
+                        if child.is_file() and not _is_generated_output_path(child, p, self.output_dir):
                             files.append((child, p))
             except Exception:
                 continue
@@ -926,7 +987,7 @@ class MainWindow(FramelessMainWindow):
 
     def _init_default_output_dir(self):
         pics_dir = _get_windows_pictures_dir() or (Path.home() / "Pictures")
-        base = pics_dir / "FlymeLivePhotoFix_output"
+        base = _flyme_output_dir_for(pics_dir)
         try:
             base.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -942,11 +1003,10 @@ class MainWindow(FramelessMainWindow):
             self._save_settings()
 
     def _auto_set_output_dir_from_drop(self, paths: list[Path]):
-        drop_dirs = [p for p in paths if p.is_dir()]
-        if not drop_dirs:
+        source_dir = _first_source_dir(paths)
+        if source_dir is None:
             return
-        # If multiple folders are dropped, use the first one as the output base.
-        target = drop_dirs[0] / "FlymeLivePhotoFix_output"
+        target = _flyme_output_dir_for(source_dir)
         try:
             target.mkdir(parents=True, exist_ok=True)
             self.output_edit.setText(str(target))
@@ -1321,7 +1381,14 @@ class MainWindow(FramelessMainWindow):
         self.progress.setRange(0, 0)
 
         self._drop_thread = QThread(self)
-        self._drop_worker = DropScanWorker(paths, self._current_existing_paths(), self.scan_subdirs_check.isChecked())
+        output_dir_text = self.output_edit.text().strip()
+        output_dir = Path(output_dir_text) if output_dir_text else None
+        self._drop_worker = DropScanWorker(
+            paths,
+            self._current_existing_paths(),
+            self.scan_subdirs_check.isChecked(),
+            output_dir,
+        )
         self._drop_worker.moveToThread(self._drop_thread)
         self._drop_thread.started.connect(self._drop_worker.run)
         self._drop_worker.batch_ready.connect(self._on_drop_batch_ready)
