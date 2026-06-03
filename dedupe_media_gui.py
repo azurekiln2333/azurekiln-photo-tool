@@ -68,6 +68,9 @@ ROW_BATCH_SIZE = 100
 UI_APPEND_DRAIN_ROWS = 1000
 UI_UPDATE_DRAIN_ROWS = 200
 HASH_THREAD_OPTIONS = (1, 2, 4, 8, 16)
+KEEP_STRATEGY_TOP = "top"
+KEEP_STRATEGY_NESTED = "nested"
+KEEP_STRATEGIES = (KEEP_STRATEGY_TOP, KEEP_STRATEGY_NESTED)
 COPY_SUFFIX_RE = re.compile(r"\s*\((\d+)\)$")
 TRANSLATIONS = {
     "zh": {
@@ -82,6 +85,9 @@ TRANSLATIONS = {
         "scan_subdirs": "扫描子目录",
         "permanent_delete": "永久删除",
         "hash_threads": "Hash 线程",
+        "keep_strategy": "保留策略",
+        "keep_strategy_top": "上层目录优先",
+        "keep_strategy_nested": "子目录优先",
         "drop_hint": "拖入图片、视频或文件夹；同大小文件才会计算完整 SHA-256，提高扫描速度。",
         "table_file": "文件",
         "table_abs_path": "所在目录",
@@ -128,6 +134,9 @@ TRANSLATIONS = {
         "scan_subdirs": "Scan subfolders",
         "permanent_delete": "Permanent delete",
         "hash_threads": "Hash threads",
+        "keep_strategy": "Keep",
+        "keep_strategy_top": "Prefer parent folder",
+        "keep_strategy_nested": "Prefer subfolder",
         "drop_hint": "Drop photos, videos, or folders. Full SHA-256 is calculated only for same-size files.",
         "table_file": "File",
         "table_abs_path": "Folder",
@@ -245,7 +254,15 @@ def _format_size(size: int) -> str:
     return f"{size} B"
 
 
-def _keeper_sort_key(path: Path):
+def _relative_depth(item: DedupeItem) -> int:
+    parent = item.rel_path.parent
+    if str(parent) == ".":
+        return 0
+    return len(parent.parts)
+
+
+def _keeper_sort_key(item: DedupeItem, keep_strategy: str):
+    path = item.path
     match = COPY_SUFFIX_RE.search(path.stem)
     if match:
         base_stem = path.stem[: match.start()]
@@ -255,7 +272,13 @@ def _keeper_sort_key(path: Path):
         base_stem = path.stem
         copy_index = 0
         copy_rank = 0
+    depth = _relative_depth(item)
+    if keep_strategy == KEEP_STRATEGY_NESTED:
+        depth_rank = -depth
+    else:
+        depth_rank = depth
     return (
+        depth_rank,
         str(path.parent).casefold(),
         base_stem.casefold(),
         path.suffix.casefold(),
@@ -388,12 +411,14 @@ class ScanWorker(QObject):
         paths: list[Path],
         recursive: bool,
         thread_count: int,
+        keep_strategy: str,
         existing: set[Path] | None = None,
     ):
         super().__init__()
         self.paths = paths
         self.recursive = recursive
         self.thread_count = max(1, thread_count)
+        self.keep_strategy = keep_strategy if keep_strategy in KEEP_STRATEGIES else KEEP_STRATEGY_TOP
         self.existing = existing or set()
 
     def run(self):
@@ -466,7 +491,7 @@ class ScanWorker(QObject):
 
             status_batch: list[DedupeItem] = []
             for hash_items in by_hash.values():
-                hash_items.sort(key=lambda value: _keeper_sort_key(value.path))
+                hash_items.sort(key=lambda value: _keeper_sort_key(value, self.keep_strategy))
                 if len(hash_items) == 1:
                     continue
                 for index, item in enumerate(hash_items):
@@ -678,8 +703,15 @@ class MainWindow(FramelessMainWindow):
         for thread_count in HASH_THREAD_OPTIONS:
             self.thread_count_combo.addItem(str(thread_count), userData=thread_count)
         self._set_thread_count(_default_thread_count())
+        self.keep_strategy_label = BodyLabel(self.tr("keep_strategy"), self)
+        self.keep_strategy_combo = ComboBox(self)
+        self.keep_strategy_combo.setFixedWidth(128)
+        self.keep_strategy_combo.addItem(self.tr("keep_strategy_top"), userData=KEEP_STRATEGY_TOP)
+        self.keep_strategy_combo.addItem(self.tr("keep_strategy_nested"), userData=KEEP_STRATEGY_NESTED)
         row2.addWidget(self.include_subdirs_check)
         row2.addWidget(self.permanent_delete_check)
+        row2.addWidget(self.keep_strategy_label)
+        row2.addWidget(self.keep_strategy_combo)
         row2.addWidget(self.hash_thread_label)
         row2.addWidget(self.thread_count_combo)
         row2.addStretch(1)
@@ -771,6 +803,7 @@ class MainWindow(FramelessMainWindow):
         self._apply_language()
         self.include_subdirs_check.toggled.connect(lambda _checked=False: self._save_settings())
         self.permanent_delete_check.toggled.connect(lambda _checked=False: self._save_settings())
+        self.keep_strategy_combo.currentIndexChanged.connect(self._on_keep_strategy_changed)
         self.thread_count_combo.currentIndexChanged.connect(lambda _index=0: self._save_settings())
 
     def _set_blue_title_bar(self):
@@ -820,12 +853,37 @@ class MainWindow(FramelessMainWindow):
                 self.thread_count_combo.setCurrentIndex(index)
                 return
 
+    def _keep_strategy(self) -> str:
+        value = self.keep_strategy_combo.currentData()
+        return value if value in KEEP_STRATEGIES else KEEP_STRATEGY_TOP
+
+    def _set_keep_strategy(self, keep_strategy: str):
+        if keep_strategy not in KEEP_STRATEGIES:
+            keep_strategy = KEEP_STRATEGY_TOP
+        for index in range(self.keep_strategy_combo.count()):
+            if self.keep_strategy_combo.itemData(index) == keep_strategy:
+                self.keep_strategy_combo.setCurrentIndex(index)
+                return
+
+    def _refresh_keep_strategy_options(self):
+        current = self._keep_strategy()
+        labels = {
+            KEEP_STRATEGY_TOP: self.tr("keep_strategy_top"),
+            KEEP_STRATEGY_NESTED: self.tr("keep_strategy_nested"),
+        }
+        for index in range(self.keep_strategy_combo.count()):
+            strategy = self.keep_strategy_combo.itemData(index)
+            if strategy in labels:
+                self.keep_strategy_combo.setItemText(index, labels[strategy])
+        self._set_keep_strategy(current)
+
     def _settings_payload(self) -> dict:
         return {
             "language": self.lang,
             "include_subdirs": self.include_subdirs_check.isChecked(),
             "permanent_delete": self.permanent_delete_check.isChecked(),
             "hash_threads": self._thread_count(),
+            "keep_strategy": self._keep_strategy(),
         }
 
     def _save_settings(self):
@@ -859,6 +917,7 @@ class MainWindow(FramelessMainWindow):
             self.include_subdirs_check.setChecked(bool(data.get("include_subdirs", True)))
             self.permanent_delete_check.setChecked(bool(data.get("permanent_delete", False)))
             self._set_thread_count(int(data.get("hash_threads", _default_thread_count())))
+            self._set_keep_strategy(str(data.get("keep_strategy", KEEP_STRATEGY_TOP)))
         finally:
             self._suspend_settings_save = False
 
@@ -885,6 +944,11 @@ class MainWindow(FramelessMainWindow):
             self._apply_language()
             self._save_settings()
 
+    def _on_keep_strategy_changed(self, _index: int):
+        self._save_settings()
+        if not self._suspend_settings_save and not self._is_busy():
+            self._apply_keep_strategy_to_current_results()
+
     def _apply_language(self):
         self.setWindowTitle(self.tr("app_title"))
         self.title_label.setText(self.tr("header_title"))
@@ -896,6 +960,8 @@ class MainWindow(FramelessMainWindow):
         self.btn_input.setText(self.tr("choose_source"))
         self.include_subdirs_check.setText(self.tr("scan_subdirs"))
         self.permanent_delete_check.setText(self.tr("permanent_delete"))
+        self.keep_strategy_label.setText(self.tr("keep_strategy"))
+        self._refresh_keep_strategy_options()
         self.hash_thread_label.setText(self.tr("hash_threads"))
         self.drop_hint.setText(self.tr("drop_hint"))
         self.table_model.set_headers(self._table_headers())
@@ -1013,6 +1079,7 @@ class MainWindow(FramelessMainWindow):
             paths,
             self.include_subdirs_check.isChecked(),
             self._thread_count(),
+            self._keep_strategy(),
             existing,
         )
         self._scan_worker.moveToThread(self._scan_thread)
@@ -1129,7 +1196,7 @@ class MainWindow(FramelessMainWindow):
         else:
             self._set_status_text("scan_done_status", count=len(self.file_list), duplicates=duplicates)
 
-    def _sort_rows_after_scan(self):
+    def _sort_rows_after_scan(self, force: bool = False):
         if not self.file_list:
             return
 
@@ -1139,18 +1206,49 @@ class MainWindow(FramelessMainWindow):
                     0,
                     item.group_id,
                     1 if item.duplicate else 0,
-                    _keeper_sort_key(item.path),
+                    _keeper_sort_key(item, self._keep_strategy()),
                 )
             return (1, 0, 0, str(item.rel_path).casefold())
 
         sorted_items = sorted(self.file_list, key=sort_key)
-        if sorted_items == self.file_list:
+        if sorted_items == self.file_list and not force:
             return
         self.table_model.reset_items(sorted_items)
         self._row_by_scan_id.clear()
         for row, item in enumerate(self.file_list):
             item.row_index = row
             self._row_by_scan_id[item.scan_id] = row
+
+    def _apply_keep_strategy_to_current_results(self):
+        if not self.file_list:
+            return
+        by_digest: dict[str, list[DedupeItem]] = {}
+        for item in self.file_list:
+            if item.digest:
+                by_digest.setdefault(item.digest, []).append(item)
+
+        changed = False
+        allowed_statuses = {"status_unique", "status_keep", "status_duplicate"}
+        for digest_items in by_digest.values():
+            if len(digest_items) < 2:
+                continue
+            if any(item.status not in allowed_statuses for item in digest_items):
+                continue
+            group_id = min((item.group_id for item in digest_items if item.group_id), default=0)
+            if not group_id:
+                continue
+            digest_items.sort(key=lambda value: _keeper_sort_key(value, self._keep_strategy()))
+            for index, item in enumerate(digest_items):
+                duplicate = index > 0
+                status = "status_duplicate" if duplicate else "status_keep"
+                if item.duplicate != duplicate or item.status != status:
+                    changed = True
+                item.group_id = group_id
+                item.duplicate = duplicate
+                item.status = status
+
+        if changed:
+            self._sort_rows_after_scan(force=True)
 
     def _scan_thread_finished(self):
         self._scan_worker = None
