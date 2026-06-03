@@ -57,6 +57,7 @@ from timestamp_fix_gui import (
     _safe_resolve,
     setTheme,
     setThemeColor,
+    TableView,
 )
 
 
@@ -66,6 +67,7 @@ HASH_CHUNK_SIZE = 1024 * 1024
 ROW_BATCH_SIZE = 100
 UI_APPEND_DRAIN_ROWS = 1000
 UI_UPDATE_DRAIN_ROWS = 200
+RECYCLE_BATCH_SIZE = 25
 HASH_THREAD_OPTIONS = (1, 2, 4, 8, 16)
 COPY_SUFFIX_RE = re.compile(r"\s*\((\d+)\)$")
 TRANSLATIONS = {
@@ -518,39 +520,72 @@ class ProcessWorker(QObject):
                 self.progress_update.emit(100, f"{total}/{total}")
                 self.finished.emit({"success": success, "failed": failed})
                 return
-            try:
-                self.progress_update.emit(0, f"0/{total}")
-                send2trash([str(item.path) for item in self.items])
-                success = total
-                for item in self.items:
-                    update_batch.append((item.row_index, "status_recycled"))
-                    if len(update_batch) >= ROW_BATCH_SIZE:
-                        self._emit_update_batch(update_batch)
-                self._emit_update_batch(update_batch)
-                self.progress_update.emit(100, f"{total}/{total}")
-            except TypeError:
-                success, failed = self._run_per_item(update_batch)
-            except Exception as exc:
-                failed = total
-                error_status = f"status_failed|{str(exc)[:36]}"
-                for item in self.items:
-                    update_batch.append((item.row_index, error_status))
-                    if len(update_batch) >= ROW_BATCH_SIZE:
-                        self._emit_update_batch(update_batch)
-                self._emit_update_batch(update_batch)
-                self.progress_update.emit(100, f"{total}/{total}")
+            success, failed = self._run_recycle_batches(update_batch)
             self.finished.emit({"success": success, "failed": failed})
             return
 
         success, failed = self._run_per_item(update_batch)
         self.finished.emit({"success": success, "failed": failed})
 
+    def _emit_process_progress(self, completed: int, total: int):
+        percent = int((completed / total) * 100) if total else 0
+        self.progress_update.emit(percent, f"{completed}/{total}")
+
+    def _run_recycle_batches(self, update_batch: list[tuple[int, str]]) -> tuple[int, int]:
+        success = 0
+        failed = 0
+        completed = 0
+        total = len(self.items)
+        self._emit_process_progress(0, total)
+
+        for start in range(0, total, RECYCLE_BATCH_SIZE):
+            batch = self.items[start : start + RECYCLE_BATCH_SIZE]
+            try:
+                send2trash([str(item.path) for item in batch])
+                for item in batch:
+                    success += 1
+                    completed += 1
+                    update_batch.append((item.row_index, "status_recycled"))
+            except TypeError:
+                batch_success, batch_failed, batch_completed = self._run_recycle_items(batch, update_batch)
+                success += batch_success
+                failed += batch_failed
+                completed += batch_completed
+            except Exception:
+                batch_success, batch_failed, batch_completed = self._run_recycle_items(batch, update_batch)
+                success += batch_success
+                failed += batch_failed
+                completed += batch_completed
+
+            self._emit_update_batch(update_batch)
+            self._emit_process_progress(completed, total)
+
+        return success, failed
+
+    def _run_recycle_items(
+        self,
+        items: list[DedupeItem],
+        update_batch: list[tuple[int, str]],
+    ) -> tuple[int, int, int]:
+        success = 0
+        failed = 0
+        completed = 0
+        for item in items:
+            try:
+                send2trash(str(item.path))
+                update_batch.append((item.row_index, "status_recycled"))
+                success += 1
+            except Exception as exc:
+                update_batch.append((item.row_index, f"status_failed|{str(exc)[:36]}"))
+                failed += 1
+            completed += 1
+        return success, failed, completed
+
     def _run_per_item(self, update_batch: list[tuple[int, str]]) -> tuple[int, int]:
         success = 0
         failed = 0
         total = len(self.items)
         for index, item in enumerate(self.items):
-            percent = int(((index + 1) / total) * 100) if total else 0
             try:
                 if self.permanent:
                     item.path.unlink()
@@ -566,7 +601,7 @@ class ProcessWorker(QObject):
             if len(update_batch) >= ROW_BATCH_SIZE:
                 self._emit_update_batch(update_batch)
             if _should_emit_progress(index, total):
-                self.progress_update.emit(percent, f"{index + 1}/{total}")
+                self._emit_process_progress(index + 1, total)
         self._emit_update_batch(update_batch)
         return success, failed
 
@@ -692,7 +727,7 @@ class MainWindow(FramelessMainWindow):
         hint_row.addWidget(self.drop_hint)
         hint_row.addStretch(1)
 
-        self.table = QTableView(self)
+        self.table = TableView(self)
         self.table.setModel(self.table_model)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)

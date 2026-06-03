@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMessageBox,
+    QTableView,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -230,6 +231,7 @@ def _import_fluent():
         "PrimaryPushButton": module.PrimaryPushButton,
         "PushButton": module.PushButton,
         "LineEdit": module.LineEdit,
+        "TableView": getattr(module, "TableView", QTableView),
         "TableWidget": module.TableWidget,
         "ProgressBar": module.ProgressBar,
         "CheckBox": module.CheckBox,
@@ -251,6 +253,7 @@ setTheme = FW["set_theme"]
 PrimaryPushButton = FW["PrimaryPushButton"]
 PushButton = FW["PushButton"]
 LineEdit = FW["LineEdit"]
+TableView = FW["TableView"]
 TableWidget = FW["TableWidget"]
 ProgressBar = FW["ProgressBar"]
 CheckBox = FW["CheckBox"]
