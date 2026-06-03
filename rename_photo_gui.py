@@ -1883,9 +1883,8 @@ class MainWindow(FramelessMainWindow):
         self._process_thread.start()
 
     def _queue_process_updates(self, updates: list[tuple[int, str, object]]):
-        self._process_update_queue.extend(updates)
-        if not self.is_processing and not self._process_drain_timer.isActive():
-            self._process_drain_timer.start()
+        for row, status_text, target_path_obj in updates:
+            self._update_row_status(row, status_text, target_path_obj, update_table=False)
 
     def _drain_process_updates(self):
         updates: list[tuple[int, str, object]] = []
@@ -1944,10 +1943,10 @@ class MainWindow(FramelessMainWindow):
         self.status.setText(self._display_progress_text(text))
 
     def _processing_finished(self, result: dict):
-        self._pending_process_result = result
+        self._process_update_queue.clear()
+        self._pending_process_result = None
         self.is_processing = False
-        if not self._process_drain_timer.isActive():
-            self._process_drain_timer.start()
+        self._apply_processing_finished(result)
 
     def _apply_processing_finished(self, result: dict):
         self.table.setUpdatesEnabled(True)
