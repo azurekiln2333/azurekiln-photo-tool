@@ -110,11 +110,15 @@ TRANSLATIONS["en"].update(
 TRANSLATIONS["zh"].update(
     {
         "dedupe": "图片视频去重",
+        "dedupe_settings": "图片视频去重设置",
+        "hash_thread_settings": "Hash 线程",
     }
 )
 TRANSLATIONS["en"].update(
     {
         "dedupe": "Dedupe Media",
+        "dedupe_settings": "Media Dedupe Settings",
+        "hash_thread_settings": "Hash threads",
     }
 )
 
@@ -303,7 +307,7 @@ class SettingsPage(QWidget):
         self._button_groups.append(group)
 
     def _build_feature_settings(self, layout: QVBoxLayout):
-        merge, split, flyme, timestamp, rename, _dedupe = self.feature_windows
+        merge, split, flyme, timestamp, rename, dedupe = self.feature_windows
 
         merge_layout = self._new_card("merge_settings", layout)
         self._section(merge_layout, "scan_settings")
@@ -346,6 +350,10 @@ class SettingsPage(QWidget):
         timestamp_layout = self._new_card("timestamp_settings", layout)
         self._section(timestamp_layout, "scan_settings")
         self._row(timestamp_layout, timestamp.include_subdirs_check)
+
+        dedupe_layout = self._new_card("dedupe_settings", layout)
+        self._section(dedupe_layout, "hash_thread_settings")
+        self._row(dedupe_layout, dedupe.hash_thread_label, dedupe.thread_count_combo)
 
     def set_language(self, lang: str):
         text = TRANSLATIONS[lang]

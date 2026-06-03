@@ -4,6 +4,8 @@ import hashlib
 import os
 import re
 import sys
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -59,6 +61,8 @@ from timestamp_fix_gui import (
 APP_NAME = "DedupeMediaGUI"
 SUPPORTED_SUFFIXES = IMAGE_SUFFIXES + VIDEO_SUFFIXES
 HASH_CHUNK_SIZE = 1024 * 1024
+ROW_BATCH_SIZE = 100
+HASH_THREAD_OPTIONS = (1, 2, 4, 8, 16)
 COPY_SUFFIX_RE = re.compile(r"\s*\((\d+)\)$")
 TRANSLATIONS = {
     "zh": {
@@ -72,6 +76,7 @@ TRANSLATIONS = {
         "choose_source": "选择目录",
         "scan_subdirs": "扫描子目录",
         "permanent_delete": "永久删除",
+        "hash_threads": "Hash 线程",
         "drop_hint": "拖入图片、视频或文件夹；同大小文件才会计算完整 SHA-256，提高扫描速度。",
         "table_file": "文件",
         "table_abs_path": "绝对路径",
@@ -117,6 +122,7 @@ TRANSLATIONS = {
         "choose_source": "Choose folder",
         "scan_subdirs": "Scan subfolders",
         "permanent_delete": "Permanent delete",
+        "hash_threads": "Hash threads",
         "drop_hint": "Drop photos, videos, or folders. Full SHA-256 is calculated only for same-size files.",
         "table_file": "File",
         "table_abs_path": "Absolute path",
@@ -260,22 +266,44 @@ def _should_emit_progress(index: int, total: int) -> bool:
     return (index + 1) % step == 0 or index + 1 == total
 
 
+def _default_thread_count() -> int:
+    cpu_count = os.cpu_count() or 4
+    for option in reversed(HASH_THREAD_OPTIONS):
+        if option <= cpu_count:
+            return option
+    return HASH_THREAD_OPTIONS[0]
+
+
+def _emit_batch(signal, batch: list[DedupeItem]):
+    if batch:
+        signal.emit(batch[:])
+        batch.clear()
+
+
 class ScanWorker(QObject):
-    row_ready = pyqtSignal(object)
-    row_changed = pyqtSignal(object)
+    row_batch_ready = pyqtSignal(object)
+    row_batch_changed = pyqtSignal(object)
     progress_update = pyqtSignal(int, str)
     finished = pyqtSignal(dict)
 
-    def __init__(self, paths: list[Path], recursive: bool, existing: set[Path] | None = None):
+    def __init__(
+        self,
+        paths: list[Path],
+        recursive: bool,
+        thread_count: int,
+        existing: set[Path] | None = None,
+    ):
         super().__init__()
         self.paths = paths
         self.recursive = recursive
+        self.thread_count = max(1, thread_count)
         self.existing = existing or set()
 
     def run(self):
         seen: set[Path] = set(self.existing)
         by_size: dict[int, list[DedupeItem]] = {}
         scanned = 0
+        ready_batch: list[DedupeItem] = []
 
         for file_path, source_root in _iter_media_paths(self.paths, self.recursive):
             resolved = _safe_resolve(file_path)
@@ -295,37 +323,52 @@ class ScanWorker(QObject):
             )
             by_size.setdefault(size, []).append(item)
             scanned += 1
-            self.row_ready.emit(item)
+            ready_batch.append(item)
+            if len(ready_batch) >= ROW_BATCH_SIZE:
+                _emit_batch(self.row_batch_ready, ready_batch)
             if scanned % 50 == 0:
                 self.progress_update.emit(0, f"scanning|{scanned}")
+        _emit_batch(self.row_batch_ready, ready_batch)
 
         duplicate_groups: list[list[DedupeItem]] = []
         group_id = 1
         hash_candidates = sum(len(items) for items in by_size.values() if len(items) > 1)
         hashed = 0
+        changed_batch: list[DedupeItem] = []
 
         for items in by_size.values():
             if len(items) == 1:
                 continue
 
             by_hash: dict[str, list[DedupeItem]] = {}
-            for item in items:
-                try:
-                    item.digest = _hash_file(item.path)
-                except Exception:
-                    item.status = "status_failed|hash"
-                    self.row_changed.emit(item)
-                    continue
-                hashed += 1
-                if hash_candidates:
-                    percent = int((hashed / hash_candidates) * 100)
-                    self.progress_update.emit(percent, f"scanning|{scanned}")
-                by_hash.setdefault(item.digest, []).append(item)
+            with ThreadPoolExecutor(max_workers=self.thread_count) as executor:
+                futures = {executor.submit(_hash_file, item.path): item for item in items}
+                completed_hashes = as_completed(futures)
+                for future in completed_hashes:
+                    item = futures[future]
+                    try:
+                        item.digest = future.result()
+                    except Exception:
+                        item.status = "status_failed|hash"
+                        changed_batch.append(item)
+                        if len(changed_batch) >= ROW_BATCH_SIZE:
+                            _emit_batch(self.row_batch_changed, changed_batch)
+                        continue
 
+                    by_hash.setdefault(item.digest, []).append(item)
+                    changed_batch.append(item)
+                    if len(changed_batch) >= ROW_BATCH_SIZE:
+                        _emit_batch(self.row_batch_changed, changed_batch)
+                    hashed += 1
+                    if hash_candidates and _should_emit_progress(hashed - 1, hash_candidates):
+                        percent = int((hashed / hash_candidates) * 100)
+                        self.progress_update.emit(percent, f"scanning|{scanned}")
+            _emit_batch(self.row_batch_changed, changed_batch)
+
+            status_batch: list[DedupeItem] = []
             for hash_items in by_hash.values():
                 hash_items.sort(key=lambda value: _keeper_sort_key(value.path))
                 if len(hash_items) == 1:
-                    self.row_changed.emit(hash_items[0])
                     continue
                 for index, item in enumerate(hash_items):
                     item.group_id = group_id
@@ -334,9 +377,12 @@ class ScanWorker(QObject):
                     else:
                         item.duplicate = True
                         item.status = "status_duplicate"
-                    self.row_changed.emit(item)
+                    status_batch.append(item)
+                    if len(status_batch) >= ROW_BATCH_SIZE:
+                        _emit_batch(self.row_batch_changed, status_batch)
                 duplicate_groups.append(hash_items)
                 group_id += 1
+            _emit_batch(self.row_batch_changed, status_batch)
 
         duplicates = sum(1 for group in duplicate_groups for item in group if item.duplicate)
         self.finished.emit({"count": scanned, "duplicates": duplicates})
@@ -396,6 +442,8 @@ class MainWindow(FramelessMainWindow):
         self._scan_worker: ScanWorker | None = None
         self._process_thread: QThread | None = None
         self._process_worker: ProcessWorker | None = None
+        self._settings_path = _get_settings_path()
+        self._suspend_settings_save = False
 
         root = QWidget(self)
         self.setCentralWidget(root)
@@ -459,8 +507,16 @@ class MainWindow(FramelessMainWindow):
         self.include_subdirs_check.toggled.connect(self.scan_files)
         self.permanent_delete_check = CheckBox(self.tr("permanent_delete"), self)
         self.permanent_delete_check.setChecked(False)
+        self.hash_thread_label = BodyLabel(self.tr("hash_threads"), self)
+        self.thread_count_combo = ComboBox(self)
+        self.thread_count_combo.setFixedWidth(96)
+        for thread_count in HASH_THREAD_OPTIONS:
+            self.thread_count_combo.addItem(str(thread_count), userData=thread_count)
+        self._set_thread_count(_default_thread_count())
         row2.addWidget(self.include_subdirs_check)
         row2.addWidget(self.permanent_delete_check)
+        row2.addWidget(self.hash_thread_label)
+        row2.addWidget(self.thread_count_combo)
         row2.addStretch(1)
 
         path_layout.addLayout(row1)
@@ -544,7 +600,11 @@ class MainWindow(FramelessMainWindow):
 
         pics_dir = _get_windows_pictures_dir() or (Path.home() / "Pictures")
         self.input_edit.setText(str(pics_dir))
+        self._load_settings()
         self._apply_language()
+        self.include_subdirs_check.toggled.connect(lambda _checked=False: self._save_settings())
+        self.permanent_delete_check.toggled.connect(lambda _checked=False: self._save_settings())
+        self.thread_count_combo.currentIndexChanged.connect(lambda _index=0: self._save_settings())
 
     def _set_blue_title_bar(self):
         self.setTitleBar(StandardTitleBar(self))
@@ -581,6 +641,60 @@ class MainWindow(FramelessMainWindow):
             return self.tr("status_failed", error=status.split("|", 1)[1])
         return self.tr(status)
 
+    def _thread_count(self) -> int:
+        value = self.thread_count_combo.currentData()
+        return int(value) if value in HASH_THREAD_OPTIONS else _default_thread_count()
+
+    def _set_thread_count(self, thread_count: int):
+        if thread_count not in HASH_THREAD_OPTIONS:
+            thread_count = _default_thread_count()
+        for index in range(self.thread_count_combo.count()):
+            if self.thread_count_combo.itemData(index) == thread_count:
+                self.thread_count_combo.setCurrentIndex(index)
+                return
+
+    def _settings_payload(self) -> dict:
+        return {
+            "language": self.lang,
+            "include_subdirs": self.include_subdirs_check.isChecked(),
+            "permanent_delete": self.permanent_delete_check.isChecked(),
+            "hash_threads": self._thread_count(),
+        }
+
+    def _save_settings(self):
+        if self._suspend_settings_save:
+            return
+        try:
+            self._settings_path.parent.mkdir(parents=True, exist_ok=True)
+            self._settings_path.write_text(
+                json.dumps(self._settings_payload(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+    def _load_settings(self):
+        if not self._settings_path.exists():
+            return
+        try:
+            data = json.loads(self._settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        self._suspend_settings_save = True
+        try:
+            lang = data.get("language")
+            if lang in SUPPORTED_LANGUAGES:
+                self.lang = lang
+                for index in range(self.language_combo.count()):
+                    if self.language_combo.itemData(index) == lang:
+                        self.language_combo.setCurrentIndex(index)
+                        break
+            self.include_subdirs_check.setChecked(bool(data.get("include_subdirs", True)))
+            self.permanent_delete_check.setChecked(bool(data.get("permanent_delete", False)))
+            self._set_thread_count(int(data.get("hash_threads", _default_thread_count())))
+        finally:
+            self._suspend_settings_save = False
+
     def _set_status_text(self, key: str, **kwargs):
         self._last_status_key = key
         self._last_status_kwargs = kwargs
@@ -598,6 +712,7 @@ class MainWindow(FramelessMainWindow):
         if lang in SUPPORTED_LANGUAGES and lang != self.lang:
             self.lang = lang
             self._apply_language()
+            self._save_settings()
 
     def _apply_language(self):
         self.setWindowTitle(self.tr("app_title"))
@@ -610,6 +725,7 @@ class MainWindow(FramelessMainWindow):
         self.btn_input.setText(self.tr("choose_source"))
         self.include_subdirs_check.setText(self.tr("scan_subdirs"))
         self.permanent_delete_check.setText(self.tr("permanent_delete"))
+        self.hash_thread_label.setText(self.tr("hash_threads"))
         self.drop_hint.setText(self.tr("drop_hint"))
         self.table.setHorizontalHeaderLabels(self._table_headers())
         self.btn_scan.setText(self.tr("rescan"))
@@ -704,11 +820,16 @@ class MainWindow(FramelessMainWindow):
         self.progress.setValue(0)
         self._set_status_text("scanning")
         self._scan_thread = QThread(self)
-        self._scan_worker = ScanWorker(paths, self.include_subdirs_check.isChecked(), existing)
+        self._scan_worker = ScanWorker(
+            paths,
+            self.include_subdirs_check.isChecked(),
+            self._thread_count(),
+            existing,
+        )
         self._scan_worker.moveToThread(self._scan_thread)
         self._scan_thread.started.connect(self._scan_worker.run)
-        self._scan_worker.row_ready.connect(self._append_row)
-        self._scan_worker.row_changed.connect(self._refresh_row)
+        self._scan_worker.row_batch_ready.connect(self._append_rows)
+        self._scan_worker.row_batch_changed.connect(self._refresh_rows)
         self._scan_worker.progress_update.connect(self._update_scan_progress)
         self._scan_worker.finished.connect(self._scan_finished)
         self._scan_worker.finished.connect(self._scan_thread.quit)
@@ -717,13 +838,8 @@ class MainWindow(FramelessMainWindow):
         self._scan_thread.finished.connect(self._scan_thread_finished)
         self._scan_thread.start()
 
-    def _append_row(self, item: DedupeItem):
-        item.row_index = len(self.file_list)
-        self.file_list.append(item)
-        row = self.table.rowCount()
-        self._row_by_scan_id[item.scan_id] = row
-        self.table.insertRow(row)
-        values = [
+    def _row_values(self, item: DedupeItem) -> list[str]:
+        return [
             str(item.rel_path),
             str(_safe_resolve(item.path)),
             _format_size(item.size),
@@ -731,17 +847,48 @@ class MainWindow(FramelessMainWindow):
             str(item.group_id) if item.group_id else "-",
             self._display_status(item.status),
         ]
-        duplicate_bg = QBrush(QColor("#FEF3F2"))
-        duplicate_fg = QBrush(QColor("#B42318"))
-        for column, value in enumerate(values):
-            table_item = QTableWidgetItem(value)
-            if item.duplicate:
-                table_item.setBackground(duplicate_bg)
-                table_item.setForeground(duplicate_fg)
-            self.table.setItem(row, column, table_item)
-        pending_item = self._pending_row_updates.pop(item.scan_id, None)
-        if pending_item is not None:
-            self._refresh_row(pending_item)
+
+    def _set_row_values(self, row: int, item: DedupeItem):
+        for column, value in enumerate(self._row_values(item)):
+            table_item = self.table.item(row, column)
+            if table_item is None:
+                table_item = QTableWidgetItem(value)
+                self.table.setItem(row, column, table_item)
+            else:
+                table_item.setText(value)
+        self._style_row(row, item.duplicate)
+
+    def _append_row(self, item: DedupeItem):
+        self._append_rows([item])
+
+    def _append_rows(self, items: list[DedupeItem]):
+        if not items:
+            return
+        self.table.setUpdatesEnabled(False)
+        try:
+            start_row = self.table.rowCount()
+            self.table.setRowCount(start_row + len(items))
+            for offset, item in enumerate(items):
+                item.row_index = len(self.file_list)
+                self.file_list.append(item)
+                row = start_row + offset
+                self._row_by_scan_id[item.scan_id] = row
+                self._set_row_values(row, item)
+                pending_item = self._pending_row_updates.pop(item.scan_id, None)
+                if pending_item is not None:
+                    self._refresh_row(pending_item)
+        finally:
+            self.table.setUpdatesEnabled(True)
+
+    def _refresh_rows(self, items: list[DedupeItem]):
+        if not items:
+            return
+        self.table.setUpdatesEnabled(False)
+        try:
+            for item in items:
+                self._refresh_row(item)
+        finally:
+            self.table.setUpdatesEnabled(True)
 
     def _style_row(self, row: int, duplicate: bool):
         duplicate_bg = QBrush(QColor("#FEF3F2"))
