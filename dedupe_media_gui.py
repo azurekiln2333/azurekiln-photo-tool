@@ -86,8 +86,8 @@ TRANSLATIONS = {
         "permanent_delete": "永久删除",
         "hash_threads": "Hash 线程",
         "keep_strategy": "保留策略",
-        "keep_strategy_top": "上层目录优先",
-        "keep_strategy_nested": "子目录优先",
+        "keep_strategy_top": "保留上层目录文件",
+        "keep_strategy_nested": "保留子目录文件",
         "drop_hint": "拖入图片、视频或文件夹；同大小文件才会计算完整 SHA-256，提高扫描速度。",
         "table_file": "文件",
         "table_abs_path": "所在目录",
@@ -135,8 +135,8 @@ TRANSLATIONS = {
         "permanent_delete": "Permanent delete",
         "hash_threads": "Hash threads",
         "keep_strategy": "Keep",
-        "keep_strategy_top": "Prefer parent folder",
-        "keep_strategy_nested": "Prefer subfolder",
+        "keep_strategy_top": "Keep parent folder file",
+        "keep_strategy_nested": "Keep subfolder file",
         "drop_hint": "Drop photos, videos, or folders. Full SHA-256 is calculated only for same-size files.",
         "table_file": "File",
         "table_abs_path": "Folder",
@@ -254,11 +254,14 @@ def _format_size(size: int) -> str:
     return f"{size} B"
 
 
-def _relative_depth(item: DedupeItem) -> int:
-    parent = item.rel_path.parent
-    if str(parent) == ".":
-        return 0
-    return len(parent.parts)
+def _folder_depth(item: DedupeItem) -> int:
+    try:
+        return len(_safe_resolve(item.path).parent.parts)
+    except Exception:
+        parent = item.rel_path.parent
+        if str(parent) == ".":
+            return 0
+        return len(parent.parts)
 
 
 def _keeper_sort_key(item: DedupeItem, keep_strategy: str):
@@ -272,7 +275,7 @@ def _keeper_sort_key(item: DedupeItem, keep_strategy: str):
         base_stem = path.stem
         copy_index = 0
         copy_rank = 0
-    depth = _relative_depth(item)
+    depth = _folder_depth(item)
     if keep_strategy == KEEP_STRATEGY_NESTED:
         depth_rank = -depth
     else:
@@ -1238,6 +1241,20 @@ class MainWindow(FramelessMainWindow):
         for row, item in enumerate(self.file_list):
             item.row_index = row
             self._row_by_scan_id[item.scan_id] = row
+        if self.file_list:
+            top_left = self.table_model.index(0, 0)
+            bottom_right = self.table_model.index(len(self.file_list) - 1, self.table_model.columnCount() - 1)
+            self.table_model.dataChanged.emit(
+                top_left,
+                bottom_right,
+                [
+                    Qt.ItemDataRole.DisplayRole,
+                    Qt.ItemDataRole.BackgroundRole,
+                    Qt.ItemDataRole.ForegroundRole,
+                ],
+            )
+            self.table.viewport().update()
+            self.table.viewport().repaint()
 
     def _apply_keep_strategy_to_current_results(self):
         if not self.file_list:
