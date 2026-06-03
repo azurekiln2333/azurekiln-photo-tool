@@ -67,7 +67,8 @@ LIVE_VIDEO_STEM_SUFFIXES = ("_HEVC", "_hevc")
 DEFAULT_PHOTO_PREFIX = "IMG"
 DEFAULT_VIDEO_PREFIX = "VID"
 PROCESS_ROW_BATCH_SIZE = 100
-UI_PROCESS_DRAIN_ROWS = 120
+SCAN_ROW_DRAIN_COUNT = 80
+PROCESS_UPDATE_DRAIN_COUNT = 30
 PHOTO_PREFIX_PRESETS = ("IMG", "PXL", "DSC", "PHOTO", "PIC")
 VIDEO_PREFIX_PRESETS = ("VID", "MOV", "VIDEO", "CLIP", "PXL")
 INVALID_FILENAME_CHARS = '<>:"/\\|?*'
@@ -1618,7 +1619,7 @@ class MainWindow(FramelessMainWindow):
 
     def _drain_scan_rows(self):
         reference_items: list[ReferenceItem] = []
-        while self._reference_row_queue and len(reference_items) < UI_PROCESS_DRAIN_ROWS:
+        while self._reference_row_queue and len(reference_items) < SCAN_ROW_DRAIN_COUNT:
             reference_items.append(self._reference_row_queue.popleft())
         if reference_items:
             self.reference_table.setUpdatesEnabled(False)
@@ -1629,7 +1630,7 @@ class MainWindow(FramelessMainWindow):
                 self.reference_table.setUpdatesEnabled(True)
 
         target_items: list[RenameItem] = []
-        while self._target_row_queue and len(target_items) < UI_PROCESS_DRAIN_ROWS:
+        while self._target_row_queue and len(target_items) < SCAN_ROW_DRAIN_COUNT:
             target_items.append(self._target_row_queue.popleft())
         if target_items:
             self.table.setUpdatesEnabled(False)
@@ -1855,7 +1856,7 @@ class MainWindow(FramelessMainWindow):
 
     def _drain_process_updates(self):
         updates: list[tuple[int, str, object]] = []
-        while self._process_update_queue and len(updates) < UI_PROCESS_DRAIN_ROWS:
+        while self._process_update_queue and len(updates) < PROCESS_UPDATE_DRAIN_COUNT:
             updates.append(self._process_update_queue.popleft())
 
         if updates:
@@ -1895,16 +1896,16 @@ class MainWindow(FramelessMainWindow):
                 ):
                     item.path = target_path
                     item.rel_path = _relative_path(target_path, item.source_root)
-                self.table.setItem(row, 0, QTableWidgetItem(str(item.rel_path)))
-                self.table.setItem(row, 3, QTableWidgetItem(item.target_name or self.tr("target_unknown")))
 
-        self.table.setItem(row, 4, QTableWidgetItem(self._display_status(status_text)))
+        status_item = self.table.item(row, 4)
+        if status_item is None:
+            self.table.setItem(row, 4, QTableWidgetItem(self._display_status(status_text)))
+        else:
+            status_item.setText(self._display_status(status_text))
 
     def _update_progress(self, percent: int, text: str):
         self.progress.setValue(percent)
         self.status.setText(self._display_progress_text(text))
-        self.progress.repaint()
-        self.status.repaint()
 
     def _processing_finished(self, result: dict):
         self._pending_process_result = result
