@@ -353,6 +353,11 @@ class DedupeTableModel(QAbstractTableModel):
         self.items.extend(items)
         self.endInsertRows()
 
+    def reset_items(self, items: list[DedupeItem]):
+        self.beginResetModel()
+        self.items[:] = items
+        self.endResetModel()
+
     def update_row(self, row: int):
         if not (0 <= row < len(self.items)):
             return
@@ -1101,11 +1106,35 @@ class MainWindow(FramelessMainWindow):
     def _apply_scan_finished(self, result: dict):
         count = int(result.get("count", 0))
         duplicates = int(result.get("duplicates", 0))
+        self._sort_rows_after_scan()
         self.progress.setValue(100)
         if count == 0:
             self._set_status_text("scan_none_status")
         else:
             self._set_status_text("scan_done_status", count=len(self.file_list), duplicates=duplicates)
+
+    def _sort_rows_after_scan(self):
+        if not self.file_list:
+            return
+
+        def sort_key(item: DedupeItem):
+            if item.group_id:
+                return (
+                    0,
+                    item.group_id,
+                    1 if item.duplicate else 0,
+                    _keeper_sort_key(item.path),
+                )
+            return (1, 0, 0, str(item.rel_path).casefold())
+
+        sorted_items = sorted(self.file_list, key=sort_key)
+        if sorted_items == self.file_list:
+            return
+        self.table_model.reset_items(sorted_items)
+        self._row_by_scan_id.clear()
+        for row, item in enumerate(self.file_list):
+            item.row_index = row
+            self._row_by_scan_id[item.scan_id] = row
 
     def _scan_thread_finished(self):
         self._scan_worker = None
