@@ -621,6 +621,7 @@ class MainWindow(FramelessMainWindow):
         self._append_queue: deque[DedupeItem] = deque()
         self._refresh_queue: deque[DedupeItem] = deque()
         self._process_update_queue: deque[tuple[int, str]] = deque()
+        self._pending_keep_strategy_apply = False
         self._pending_scan_result: dict | None = None
         self._pending_process_result: dict | None = None
         self._drain_timer = QTimer(self)
@@ -946,8 +947,12 @@ class MainWindow(FramelessMainWindow):
 
     def _on_keep_strategy_changed(self, _index: int):
         self._save_settings()
-        if not self._suspend_settings_save and not self._is_busy():
-            self._apply_keep_strategy_to_current_results()
+        if self._suspend_settings_save:
+            return
+        if self._is_busy():
+            self._pending_keep_strategy_apply = True
+            return
+        self._apply_keep_strategy_to_current_results()
 
     def _apply_language(self):
         self.setWindowTitle(self.tr("app_title"))
@@ -1144,6 +1149,9 @@ class MainWindow(FramelessMainWindow):
             result = self._pending_process_result
             self._pending_process_result = None
             self._apply_processing_finished(result)
+        if self._pending_keep_strategy_apply and not self._is_busy():
+            self._pending_keep_strategy_apply = False
+            self._apply_keep_strategy_to_current_results()
 
     def _append_rows(self, items: list[DedupeItem]):
         if not items:
@@ -1189,6 +1197,8 @@ class MainWindow(FramelessMainWindow):
     def _apply_scan_finished(self, result: dict):
         count = int(result.get("count", 0))
         duplicates = int(result.get("duplicates", 0))
+        self._pending_keep_strategy_apply = False
+        self._apply_keep_strategy_to_current_results()
         self._sort_rows_after_scan()
         self.progress.setValue(100)
         if count == 0:
@@ -1227,7 +1237,7 @@ class MainWindow(FramelessMainWindow):
             if item.digest:
                 by_digest.setdefault(item.digest, []).append(item)
 
-        changed = False
+        touched = False
         allowed_statuses = {"status_unique", "status_keep", "status_duplicate"}
         for digest_items in by_digest.values():
             if len(digest_items) < 2:
@@ -1237,17 +1247,16 @@ class MainWindow(FramelessMainWindow):
             group_id = min((item.group_id for item in digest_items if item.group_id), default=0)
             if not group_id:
                 continue
+            touched = True
             digest_items.sort(key=lambda value: _keeper_sort_key(value, self._keep_strategy()))
             for index, item in enumerate(digest_items):
                 duplicate = index > 0
                 status = "status_duplicate" if duplicate else "status_keep"
-                if item.duplicate != duplicate or item.status != status:
-                    changed = True
                 item.group_id = group_id
                 item.duplicate = duplicate
                 item.status = status
 
-        if changed:
+        if touched:
             self._sort_rows_after_scan(force=True)
 
     def _scan_thread_finished(self):
