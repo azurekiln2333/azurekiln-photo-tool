@@ -627,6 +627,9 @@ class MainWindow(FramelessMainWindow):
         self._drain_timer = QTimer(self)
         self._drain_timer.setInterval(10)
         self._drain_timer.timeout.connect(self._drain_table_queues)
+        self._keep_strategy_apply_timer = QTimer(self)
+        self._keep_strategy_apply_timer.setSingleShot(True)
+        self._keep_strategy_apply_timer.timeout.connect(self._apply_keep_strategy_change)
         self.table_model = DedupeTableModel(self.file_list, self._display_status, self._table_headers(), self)
         self.is_processing = False
         self._scan_thread: QThread | None = None
@@ -805,6 +808,10 @@ class MainWindow(FramelessMainWindow):
         self.include_subdirs_check.toggled.connect(lambda _checked=False: self._save_settings())
         self.permanent_delete_check.toggled.connect(lambda _checked=False: self._save_settings())
         self.keep_strategy_combo.currentIndexChanged.connect(self._on_keep_strategy_changed)
+        if hasattr(self.keep_strategy_combo, "currentTextChanged"):
+            self.keep_strategy_combo.currentTextChanged.connect(self._on_keep_strategy_changed)
+        if hasattr(self.keep_strategy_combo, "activated"):
+            self.keep_strategy_combo.activated.connect(self._on_keep_strategy_changed)
         self.thread_count_combo.currentIndexChanged.connect(lambda _index=0: self._save_settings())
 
     def _set_blue_title_bar(self):
@@ -945,10 +952,13 @@ class MainWindow(FramelessMainWindow):
             self._apply_language()
             self._save_settings()
 
-    def _on_keep_strategy_changed(self, _index: int):
+    def _on_keep_strategy_changed(self, *_args):
         self._save_settings()
         if self._suspend_settings_save:
             return
+        self._keep_strategy_apply_timer.start(0)
+
+    def _apply_keep_strategy_change(self):
         if self._is_busy():
             self._pending_keep_strategy_apply = True
             return
@@ -1238,15 +1248,22 @@ class MainWindow(FramelessMainWindow):
                 by_digest.setdefault(item.digest, []).append(item)
 
         touched = False
-        allowed_statuses = {"status_unique", "status_keep", "status_duplicate"}
+        terminal_statuses = (
+            "status_processing",
+            "status_recycled",
+            "status_deleted",
+            "status_failed",
+        )
+        next_group_id = max((item.group_id for item in self.file_list), default=0) + 1
         for digest_items in by_digest.values():
             if len(digest_items) < 2:
                 continue
-            if any(item.status not in allowed_statuses for item in digest_items):
+            if any(item.status.startswith(terminal_statuses) for item in digest_items):
                 continue
             group_id = min((item.group_id for item in digest_items if item.group_id), default=0)
             if not group_id:
-                continue
+                group_id = next_group_id
+                next_group_id += 1
             touched = True
             digest_items.sort(key=lambda value: _keeper_sort_key(value, self._keep_strategy()))
             for index, item in enumerate(digest_items):
@@ -1258,6 +1275,7 @@ class MainWindow(FramelessMainWindow):
 
         if touched:
             self._sort_rows_after_scan(force=True)
+            self.table.viewport().update()
 
     def _scan_thread_finished(self):
         self._scan_worker = None
