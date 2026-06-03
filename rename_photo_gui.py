@@ -729,6 +729,15 @@ class MainWindow(FramelessMainWindow):
         self._last_status_kwargs: dict = {}
         self.reference_list: list[ReferenceItem] = []
         self.file_list: list[RenameItem] = []
+        self._reference_row_queue: deque[ReferenceItem] = deque()
+        self._target_row_queue: deque[RenameItem] = deque()
+        self._pending_reference_drop_result: int | None = None
+        self._pending_target_drop_result: int | None = None
+        self._pending_reference_scan_result: int | None = None
+        self._pending_target_scan_result: int | None = None
+        self._scan_drain_timer = QTimer(self)
+        self._scan_drain_timer.setInterval(10)
+        self._scan_drain_timer.timeout.connect(self._drain_scan_rows)
         self._process_update_queue: deque[tuple[int, str, object]] = deque()
         self._pending_process_result: dict | None = None
         self._process_drain_timer = QTimer(self)
@@ -1158,6 +1167,9 @@ class MainWindow(FramelessMainWindow):
             or self._thread_is_running(self._target_scan_thread)
             or self._thread_is_running(self._reference_drop_thread)
             or self._thread_is_running(self._target_drop_thread)
+            or self._scan_drain_timer.isActive()
+            or bool(self._reference_row_queue)
+            or bool(self._target_row_queue)
         )
 
     def _init_default_dirs(self):
@@ -1396,12 +1408,22 @@ class MainWindow(FramelessMainWindow):
     def clear_list(self):
         if self._is_busy():
             return
+        self._clear_scan_queues()
         self.reference_list.clear()
         self.file_list.clear()
         self.reference_table.setRowCount(0)
         self.table.setRowCount(0)
         self.progress.setValue(0)
         self._set_status_text("list_cleared")
+
+    def _clear_scan_queues(self):
+        self._reference_row_queue.clear()
+        self._target_row_queue.clear()
+        self._pending_reference_drop_result = None
+        self._pending_target_drop_result = None
+        self._pending_reference_scan_result = None
+        self._pending_target_scan_result = None
+        self._scan_drain_timer.stop()
 
     def add_reference_paths(self, paths: list[Path]):
         if self._is_busy():
@@ -1424,7 +1446,7 @@ class MainWindow(FramelessMainWindow):
         )
         self._reference_drop_worker.moveToThread(self._reference_drop_thread)
         self._reference_drop_thread.started.connect(self._reference_drop_worker.run)
-        self._reference_drop_worker.row_ready.connect(self._append_reference_row)
+        self._reference_drop_worker.row_ready.connect(self._queue_reference_row)
         self._reference_drop_worker.finished.connect(self._reference_drop_finished)
         self._reference_drop_worker.finished.connect(self._reference_drop_thread.quit)
         self._reference_drop_worker.finished.connect(self._reference_drop_worker.deleteLater)
@@ -1453,7 +1475,7 @@ class MainWindow(FramelessMainWindow):
         )
         self._target_drop_worker.moveToThread(self._target_drop_thread)
         self._target_drop_thread.started.connect(self._target_drop_worker.run)
-        self._target_drop_worker.row_ready.connect(self._append_target_row)
+        self._target_drop_worker.row_ready.connect(self._queue_target_row)
         self._target_drop_worker.finished.connect(self._target_drop_finished)
         self._target_drop_worker.finished.connect(self._target_drop_thread.quit)
         self._target_drop_worker.finished.connect(self._target_drop_worker.deleteLater)
@@ -1520,6 +1542,9 @@ class MainWindow(FramelessMainWindow):
     def _start_reference_scan(self, reference_dir: Path):
         self.reference_list.clear()
         self.reference_table.setRowCount(0)
+        self._reference_row_queue.clear()
+        self._pending_reference_scan_result = None
+        self._pending_reference_drop_result = None
         self.progress.setValue(0)
         self._set_status_text("scanning_reference")
         self._save_settings()
@@ -1528,7 +1553,7 @@ class MainWindow(FramelessMainWindow):
         self._reference_scan_worker = ReferenceScanWorker([reference_dir], self.include_subdirs_check.isChecked())
         self._reference_scan_worker.moveToThread(self._reference_scan_thread)
         self._reference_scan_thread.started.connect(self._reference_scan_worker.run)
-        self._reference_scan_worker.row_ready.connect(self._append_reference_row)
+        self._reference_scan_worker.row_ready.connect(self._queue_reference_row)
         self._reference_scan_worker.finished.connect(self._reference_scan_finished)
         self._reference_scan_worker.finished.connect(self._reference_scan_thread.quit)
         self._reference_scan_worker.finished.connect(self._reference_scan_worker.deleteLater)
@@ -1539,6 +1564,9 @@ class MainWindow(FramelessMainWindow):
     def _start_target_scan(self, target_dir: Path):
         self.file_list.clear()
         self.table.setRowCount(0)
+        self._target_row_queue.clear()
+        self._pending_target_scan_result = None
+        self._pending_target_drop_result = None
         self.progress.setValue(0)
         self._set_status_text("scanning_target")
         self._save_settings()
@@ -1547,7 +1575,7 @@ class MainWindow(FramelessMainWindow):
         self._target_scan_worker = TargetScanWorker([target_dir], self.include_subdirs_check.isChecked())
         self._target_scan_worker.moveToThread(self._target_scan_thread)
         self._target_scan_thread.started.connect(self._target_scan_worker.run)
-        self._target_scan_worker.row_ready.connect(self._append_target_row)
+        self._target_scan_worker.row_ready.connect(self._queue_target_row)
         self._target_scan_worker.finished.connect(self._target_scan_finished)
         self._target_scan_worker.finished.connect(self._target_scan_thread.quit)
         self._target_scan_worker.finished.connect(self._target_scan_worker.deleteLater)
@@ -1576,6 +1604,63 @@ class MainWindow(FramelessMainWindow):
         self.table.setItem(row, 3, QTableWidgetItem(item.target_name or self.tr("target_unknown")))
         self.table.setItem(row, 4, QTableWidgetItem(self._display_status(item.status)))
 
+    def _queue_reference_row(self, item: ReferenceItem):
+        self._reference_row_queue.append(item)
+        self._ensure_scan_drain_timer()
+
+    def _queue_target_row(self, item: RenameItem):
+        self._target_row_queue.append(item)
+        self._ensure_scan_drain_timer()
+
+    def _ensure_scan_drain_timer(self):
+        if not self._scan_drain_timer.isActive():
+            self._scan_drain_timer.start()
+
+    def _drain_scan_rows(self):
+        reference_items: list[ReferenceItem] = []
+        while self._reference_row_queue and len(reference_items) < UI_PROCESS_DRAIN_ROWS:
+            reference_items.append(self._reference_row_queue.popleft())
+        if reference_items:
+            self.reference_table.setUpdatesEnabled(False)
+            try:
+                for item in reference_items:
+                    self._append_reference_row(item)
+            finally:
+                self.reference_table.setUpdatesEnabled(True)
+
+        target_items: list[RenameItem] = []
+        while self._target_row_queue and len(target_items) < UI_PROCESS_DRAIN_ROWS:
+            target_items.append(self._target_row_queue.popleft())
+        if target_items:
+            self.table.setUpdatesEnabled(False)
+            try:
+                for item in target_items:
+                    self._append_target_row(item)
+            finally:
+                self.table.setUpdatesEnabled(True)
+                self.table.viewport().update()
+
+        if self._reference_row_queue or self._target_row_queue:
+            return
+
+        self._scan_drain_timer.stop()
+        if self._pending_reference_drop_result is not None:
+            result = self._pending_reference_drop_result
+            self._pending_reference_drop_result = None
+            self._apply_reference_drop_finished(result)
+        if self._pending_target_drop_result is not None:
+            result = self._pending_target_drop_result
+            self._pending_target_drop_result = None
+            self._apply_target_drop_finished(result)
+        if self._pending_reference_scan_result is not None:
+            result = self._pending_reference_scan_result
+            self._pending_reference_scan_result = None
+            self._apply_reference_scan_finished(result)
+        if self._pending_target_scan_result is not None:
+            result = self._pending_target_scan_result
+            self._pending_target_scan_result = None
+            self._apply_target_scan_finished(result)
+
     def _rebuild_reference_table(self):
         self.reference_table.setRowCount(0)
         for item in self.reference_list:
@@ -1594,6 +1679,10 @@ class MainWindow(FramelessMainWindow):
             self._append_target_table_row(item)
 
     def _reference_drop_finished(self, added: int):
+        self._pending_reference_drop_result = added
+        self._ensure_scan_drain_timer()
+
+    def _apply_reference_drop_finished(self, added: int):
         self._refresh_target_matches()
         if added:
             self.progress.setValue(0)
@@ -1602,6 +1691,10 @@ class MainWindow(FramelessMainWindow):
             self._set_status_text("drop_no_new")
 
     def _target_drop_finished(self, added: int):
+        self._pending_target_drop_result = added
+        self._ensure_scan_drain_timer()
+
+    def _apply_target_drop_finished(self, added: int):
         self._refresh_target_matches()
         if added:
             self.progress.setValue(0)
@@ -1626,6 +1719,10 @@ class MainWindow(FramelessMainWindow):
         self._target_scan_thread = None
 
     def _reference_scan_finished(self, count: int):
+        self._pending_reference_scan_result = count
+        self._ensure_scan_drain_timer()
+
+    def _apply_reference_scan_finished(self, count: int):
         self._refresh_target_matches()
         if count == 0:
             self._set_status_text("scan_reference_none_status")
@@ -1633,6 +1730,10 @@ class MainWindow(FramelessMainWindow):
         self._set_status_text("scan_reference_done_status", count=count)
 
     def _target_scan_finished(self, count: int):
+        self._pending_target_scan_result = count
+        self._ensure_scan_drain_timer()
+
+    def _apply_target_scan_finished(self, count: int):
         self._refresh_target_matches()
         if count == 0:
             self._set_status_text("scan_target_none_status")

@@ -6,6 +6,7 @@ import importlib
 import subprocess
 import os
 import ctypes
+from collections import deque
 from pathlib import Path
 from uuid import uuid4
 
@@ -449,6 +450,11 @@ class MainWindow(FramelessMainWindow):
         self._fix_running = False
         self._fix_paused = False
         self._fix_stop_requested = False
+        self._output_update_queue: deque[tuple[object, str]] = deque()
+        self._pending_output_result: dict | None = None
+        self._output_drain_timer = QTimer(self)
+        self._output_drain_timer.setInterval(10)
+        self._output_drain_timer.timeout.connect(self._drain_output_updates)
 
         try:
             self.engine = LivePhotoFixTool()
@@ -729,6 +735,9 @@ class MainWindow(FramelessMainWindow):
             self._fix_running
             or self._thread_is_running(self._drop_thread)
             or self._thread_is_running(self._export_thread)
+            or self._thread_is_running(self._output_thread)
+            or self._output_drain_timer.isActive()
+            or bool(self._output_update_queue)
         )
 
     def _display_status(self, status: str) -> str:
@@ -1663,6 +1672,9 @@ class MainWindow(FramelessMainWindow):
         exist_action = "skip" if self.skip_radio.isChecked() else "overwrite"
         self._fix_paused = False
         self._fix_stop_requested = False
+        self._output_update_queue.clear()
+        self._pending_output_result = None
+        self._output_drain_timer.stop()
         self._set_fix_running_state(True)
         self.progress.setValue(0)
 
@@ -1671,7 +1683,7 @@ class MainWindow(FramelessMainWindow):
         self._output_worker.moveToThread(self._output_thread)
         self._output_thread.started.connect(self._output_worker.run)
         self._output_worker.row_update.connect(self._on_output_row_update)
-        self._output_worker.progress_update.connect(self._on_output_progress)
+        self._output_worker.progress_update.connect(self._queue_output_progress)
         self._output_worker.finished.connect(self._output_finished)
         self._output_worker.finished.connect(self._output_thread.quit)
         self._output_worker.finished.connect(self._output_worker.deleteLater)
@@ -1681,6 +1693,35 @@ class MainWindow(FramelessMainWindow):
 
     def _on_output_row_update(self, item_id: str, item_obj: object):
         self.items[item_id] = item_obj
+
+    def _queue_output_progress(self, i: int, n: int, item_obj: object, status_text: str):
+        self._output_update_queue.append((item_obj, status_text))
+        self.progress.setValue(int(i * 100 / n) if n else 0)
+        item = item_obj
+        self._set_status_text(
+            "fixing",
+            i=i,
+            n=n,
+            name=str(item.rel_path),
+            status=self._display_status(status_text),
+        )
+        if not self._output_drain_timer.isActive():
+            self._output_drain_timer.start()
+
+    def _drain_output_updates(self):
+        updates: list[tuple[object, str]] = []
+        while self._output_update_queue and len(updates) < 120:
+            updates.append(self._output_update_queue.popleft())
+        for item_obj, status_text in updates:
+            item = item_obj
+            self._set_row_status(item.item_id, status_text)
+        if self._output_update_queue:
+            return
+        self._output_drain_timer.stop()
+        if self._pending_output_result is not None:
+            result = self._pending_output_result
+            self._pending_output_result = None
+            self._apply_output_finished(result)
 
     def _on_output_progress(self, i: int, n: int, item_obj: object, status_text: str):
         item = item_obj
@@ -1695,6 +1736,11 @@ class MainWindow(FramelessMainWindow):
         )
 
     def _output_finished(self, result: dict):
+        self._pending_output_result = result
+        if not self._output_drain_timer.isActive():
+            self._output_drain_timer.start()
+
+    def _apply_output_finished(self, result: dict):
         s = result["success"]
         skip = result["skipped"]
         f = result["failed"]

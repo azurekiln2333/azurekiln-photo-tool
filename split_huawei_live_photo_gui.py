@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sys
+from collections import deque
 from pathlib import Path
 
 from qframelesswindow import FramelessMainWindow, StandardTitleBar
@@ -15,7 +16,7 @@ from file_context_menu import install_file_context_menu
 from split_huawei_live_photo import is_huawei_live_photo, split_live_photo
 from split_huawei_live_photo_translations import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, TRANSLATIONS
 
-from PyQt6.QtCore import QEvent, QObject, QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -38,6 +39,7 @@ LIVE_VIDEO_STEM_SUFFIXES = ("_HEVC", "_hevc", "")
 SPLIT_OUTPUT_DIR_NAME = "AzureKiln_HuaweiLivePhotoSplit_Output"
 LEGACY_SPLIT_OUTPUT_DIR_NAMES = ("Split_Output", "HuaweiLivePhotoSplit_Output")
 SPLIT_GENERATED_OUTPUT_DIR_NAMES = {SPLIT_OUTPUT_DIR_NAME, *LEGACY_SPLIT_OUTPUT_DIR_NAMES}
+UI_ROW_DRAIN_COUNT = 120
 
 
 def _get_windows_pictures_dir() -> Path | None:
@@ -424,6 +426,14 @@ class MainWindow(FramelessMainWindow):
         self._last_status_key = "waiting_source"
         self._last_status_kwargs: dict = {}
         self.file_list: list[dict] = []
+        self._scan_row_queue: deque[dict] = deque()
+        self._process_update_queue: deque[tuple[int, str]] = deque()
+        self._pending_drop_result: int | None = None
+        self._pending_scan_result: tuple[int, int] | None = None
+        self._pending_process_result: dict | None = None
+        self._ui_drain_timer = QTimer(self)
+        self._ui_drain_timer.setInterval(10)
+        self._ui_drain_timer.timeout.connect(self._drain_ui_queues)
         self.is_processing = False
         self._scan_thread: QThread | None = None
         self._scan_worker: ScanWorker | None = None
@@ -711,7 +721,15 @@ class MainWindow(FramelessMainWindow):
             return False
 
     def _is_busy(self) -> bool:
-        return self.is_processing or self._thread_is_running(self._scan_thread) or self._thread_is_running(self._drop_thread)
+        return (
+            self.is_processing
+            or self._thread_is_running(self._scan_thread)
+            or self._thread_is_running(self._drop_thread)
+            or self._thread_is_running(self._process_thread)
+            or self._ui_drain_timer.isActive()
+            or bool(self._scan_row_queue)
+            or bool(self._process_update_queue)
+        )
 
     def _on_language_changed(self, _index: int):
         lang = self.language_combo.currentData()
@@ -902,6 +920,12 @@ class MainWindow(FramelessMainWindow):
             return
         self.file_list.clear()
         self.table.setRowCount(0)
+        self._scan_row_queue.clear()
+        self._process_update_queue.clear()
+        self._pending_drop_result = None
+        self._pending_scan_result = None
+        self._pending_process_result = None
+        self._ui_drain_timer.stop()
         self.progress.setValue(0)
         self._set_status_text("list_cleared")
 
@@ -925,7 +949,7 @@ class MainWindow(FramelessMainWindow):
         self._drop_worker = DropScanWorker(paths, recursive, output_dir, existing)
         self._drop_worker.moveToThread(self._drop_thread)
         self._drop_thread.started.connect(self._drop_worker.run)
-        self._drop_worker.row_ready.connect(self._append_scan_row)
+        self._drop_worker.row_ready.connect(self._queue_scan_row)
         self._drop_worker.finished.connect(self._drop_finished)
         self._drop_worker.finished.connect(self._drop_thread.quit)
         self._drop_worker.finished.connect(self._drop_worker.deleteLater)
@@ -957,7 +981,7 @@ class MainWindow(FramelessMainWindow):
         self._scan_worker = ScanWorker(input_dir, self.include_subdirs_check.isChecked(), output_dir)
         self._scan_worker.moveToThread(self._scan_thread)
         self._scan_thread.started.connect(self._scan_worker.run)
-        self._scan_worker.row_ready.connect(self._append_scan_row)
+        self._scan_worker.row_ready.connect(self._queue_scan_row)
         self._scan_worker.finished.connect(self._scan_finished)
         self._scan_worker.finished.connect(self._scan_thread.quit)
         self._scan_worker.finished.connect(self._scan_worker.deleteLater)
@@ -973,7 +997,64 @@ class MainWindow(FramelessMainWindow):
         self.table.setItem(row, 3, QTableWidgetItem(self._display_status(task["status"])))
         self.file_list.append(task)
 
+    def _queue_scan_row(self, task: dict):
+        self._scan_row_queue.append(task)
+        self._ensure_ui_drain_timer()
+
+    def _queue_process_update(self, row: int, status_text: str):
+        self._process_update_queue.append((row, status_text))
+        self._ensure_ui_drain_timer()
+
+    def _ensure_ui_drain_timer(self):
+        if not self._ui_drain_timer.isActive():
+            self._ui_drain_timer.start()
+
+    def _drain_ui_queues(self):
+        scan_tasks: list[dict] = []
+        while self._scan_row_queue and len(scan_tasks) < UI_ROW_DRAIN_COUNT:
+            scan_tasks.append(self._scan_row_queue.popleft())
+        if scan_tasks:
+            self.table.setUpdatesEnabled(False)
+            try:
+                for task in scan_tasks:
+                    self._append_scan_row(task)
+            finally:
+                self.table.setUpdatesEnabled(True)
+
+        process_updates: list[tuple[int, str]] = []
+        while self._process_update_queue and len(process_updates) < UI_ROW_DRAIN_COUNT:
+            process_updates.append(self._process_update_queue.popleft())
+        if process_updates:
+            self.table.setUpdatesEnabled(False)
+            try:
+                for row, status_text in process_updates:
+                    self._update_row_status(row, status_text)
+            finally:
+                self.table.setUpdatesEnabled(True)
+                self.table.viewport().update()
+
+        if self._scan_row_queue or self._process_update_queue:
+            return
+
+        self._ui_drain_timer.stop()
+        if self._pending_drop_result is not None:
+            result = self._pending_drop_result
+            self._pending_drop_result = None
+            self._apply_drop_finished(result)
+        if self._pending_scan_result is not None:
+            count, processable = self._pending_scan_result
+            self._pending_scan_result = None
+            self._apply_scan_finished(count, processable)
+        if self._pending_process_result is not None:
+            result = self._pending_process_result
+            self._pending_process_result = None
+            self._apply_processing_finished(result)
+
     def _drop_finished(self, added: int):
+        self._pending_drop_result = added
+        self._ensure_ui_drain_timer()
+
+    def _apply_drop_finished(self, added: int):
         if added:
             self.progress.setValue(0)
             self._set_status_text("drop_added", added=added, count=len(self.file_list))
@@ -985,6 +1066,10 @@ class MainWindow(FramelessMainWindow):
         self._drop_thread = None
 
     def _scan_finished(self, count: int, processable: int):
+        self._pending_scan_result = (count, processable)
+        self._ensure_ui_drain_timer()
+
+    def _apply_scan_finished(self, count: int, processable: int):
         if count == 0:
             self._set_status_text("scan_none_status")
             self._notify(self.tr("scan_complete_title"), self.tr("scan_none_content"), is_error=True)
@@ -1017,6 +1102,9 @@ class MainWindow(FramelessMainWindow):
                 return
 
         self.is_processing = True
+        self._process_update_queue.clear()
+        self._pending_process_result = None
+        self._ui_drain_timer.stop()
         self.btn_start.setEnabled(False)
         self.btn_scan.setEnabled(False)
         self.btn_clear.setEnabled(False)
@@ -1034,7 +1122,7 @@ class MainWindow(FramelessMainWindow):
         self._process_worker = ProcessWorker(list(self.file_list), options)
         self._process_worker.moveToThread(self._process_thread)
         self._process_thread.started.connect(self._process_worker.run)
-        self._process_worker.row_update.connect(self._update_row_status)
+        self._process_worker.row_update.connect(self._queue_process_update)
         self._process_worker.progress_update.connect(self._update_progress)
         self._process_worker.finished.connect(self._processing_finished)
         self._process_worker.finished.connect(self._process_thread.quit)
@@ -1052,8 +1140,14 @@ class MainWindow(FramelessMainWindow):
     def _update_progress(self, percent: int, text: str):
         self.progress.setValue(percent)
         self.status.setText(self._display_progress_text(text))
+        self.progress.repaint()
+        self.status.repaint()
 
     def _processing_finished(self, result: dict):
+        self._pending_process_result = result
+        self._ensure_ui_drain_timer()
+
+    def _apply_processing_finished(self, result: dict):
         self.is_processing = False
         self.btn_start.setEnabled(True)
         self.btn_scan.setEnabled(True)
