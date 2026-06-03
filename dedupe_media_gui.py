@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import json
+import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -67,6 +68,7 @@ HASH_CHUNK_SIZE = 1024 * 1024
 ROW_BATCH_SIZE = 100
 UI_APPEND_DRAIN_ROWS = 1000
 UI_UPDATE_DRAIN_ROWS = 200
+RECYCLE_BATCH_SIZE = 50
 HASH_THREAD_OPTIONS = (1, 2, 4, 8, 16)
 KEEP_STRATEGY_TOP = "top"
 KEEP_STRATEGY_NESTED = "nested"
@@ -98,6 +100,9 @@ TRANSLATIONS = {
         "rescan": "重新扫描",
         "clear_list": "清空列表",
         "start_dedupe": "处理重复文件",
+        "pause_process": "暂停",
+        "resume_process": "继续",
+        "stop_process": "停止",
         "waiting_source": "等待选择或拖入文件",
         "scanning": "正在扫描并校验 Hash",
         "scan_none_status": "未找到图片或视频",
@@ -109,6 +114,9 @@ TRANSLATIONS = {
         "status_keep": "保留",
         "status_duplicate": "重复",
         "status_processing": "处理中",
+        "status_paused": "已暂停",
+        "status_stopping": "正在停止",
+        "status_stopped": "已停止：成功 {success}，失败 {failed}",
         "status_recycled": "已移入回收站",
         "status_deleted": "已永久删除",
         "status_failed": "失败：{error}",
@@ -147,6 +155,9 @@ TRANSLATIONS = {
         "rescan": "Rescan",
         "clear_list": "Clear list",
         "start_dedupe": "Process duplicates",
+        "pause_process": "Pause",
+        "resume_process": "Resume",
+        "stop_process": "Stop",
         "waiting_source": "Waiting for files",
         "scanning": "Scanning and hashing",
         "scan_none_status": "No photos or videos found",
@@ -158,6 +169,9 @@ TRANSLATIONS = {
         "status_keep": "Keep",
         "status_duplicate": "Duplicate",
         "status_processing": "Processing",
+        "status_paused": "Paused",
+        "status_stopping": "Stopping",
+        "status_stopped": "Stopped: {success} success, {failed} failed",
         "status_recycled": "Moved to recycle bin",
         "status_deleted": "Permanently deleted",
         "status_failed": "Failed: {error}",
@@ -524,11 +538,39 @@ class ProcessWorker(QObject):
         super().__init__()
         self.items = items
         self.permanent = permanent
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        self._stop_event = threading.Event()
+
+    def set_paused(self, paused: bool):
+        if paused:
+            self._pause_event.clear()
+        else:
+            self._pause_event.set()
+
+    def request_stop(self):
+        self._stop_event.set()
+        self._pause_event.set()
+
+    def _wait_if_paused_or_stopped(self) -> bool:
+        while not self._pause_event.wait(0.1):
+            if self._stop_event.is_set():
+                return True
+        return self._stop_event.is_set()
 
     def _emit_update_batch(self, updates: list[tuple[int, str]]):
         if updates:
             self.row_update_batch.emit(updates[:])
             updates.clear()
+
+    def _emit_finished(self, success: int, failed: int, completed: int, stopped: bool):
+        self.finished.emit({
+            "success": success,
+            "failed": failed,
+            "completed": completed,
+            "total": len(self.items),
+            "stopped": stopped,
+        })
 
     def run(self):
         success = 0
@@ -545,64 +587,97 @@ class ProcessWorker(QObject):
                         self._emit_update_batch(update_batch)
                 self._emit_update_batch(update_batch)
                 self.progress_update.emit(100, f"{total}/{total}")
-                self.finished.emit({"success": success, "failed": failed})
+                self._emit_finished(success, failed, total, stopped=False)
                 return
-            success, failed = self._run_recycle_items(update_batch)
-            self.finished.emit({"success": success, "failed": failed})
+            success, failed, completed, stopped = self._run_recycle_batches(update_batch)
+            self._emit_finished(success, failed, completed, stopped)
             return
 
-        success, failed = self._run_per_item(update_batch)
-        self.finished.emit({"success": success, "failed": failed})
+        success, failed, completed, stopped = self._run_per_item(update_batch)
+        self._emit_finished(success, failed, completed, stopped)
 
     def _emit_process_progress(self, completed: int, total: int):
         percent = int((completed / total) * 100) if total else 0
         self.progress_update.emit(percent, f"{completed}/{total}")
 
-    def _run_recycle_items(self, update_batch: list[tuple[int, str]]) -> tuple[int, int]:
+    def _run_recycle_batches(self, update_batch: list[tuple[int, str]]) -> tuple[int, int, int, bool]:
         success = 0
         failed = 0
+        completed = 0
         total = len(self.items)
         self._emit_process_progress(0, total)
 
-        for index, item in enumerate(self.items):
+        for start in range(0, total, RECYCLE_BATCH_SIZE):
+            if self._wait_if_paused_or_stopped():
+                break
+            batch = self.items[start : start + RECYCLE_BATCH_SIZE]
+            try:
+                send2trash([str(item.path) for item in batch])
+                for item in batch:
+                    update_batch.append((item.row_index, "status_recycled"))
+                success += len(batch)
+                completed += len(batch)
+            except TypeError:
+                batch_success, batch_failed, batch_completed = self._run_recycle_batch_per_item(batch, update_batch)
+                success += batch_success
+                failed += batch_failed
+                completed += batch_completed
+            except Exception as exc:
+                error_status = f"status_failed|{str(exc)[:36]}"
+                for item in batch:
+                    update_batch.append((item.row_index, error_status))
+                failed += len(batch)
+                completed += len(batch)
+            self._emit_update_batch(update_batch)
+            self._emit_process_progress(completed, total)
+        self._emit_update_batch(update_batch)
+        return success, failed, completed, self._stop_event.is_set()
+
+    def _run_recycle_batch_per_item(
+        self,
+        items: list[DedupeItem],
+        update_batch: list[tuple[int, str]],
+    ) -> tuple[int, int, int]:
+        success = 0
+        failed = 0
+        completed = 0
+        for item in items:
+            if self._wait_if_paused_or_stopped():
+                break
             try:
                 send2trash(str(item.path))
                 update_batch.append((item.row_index, "status_recycled"))
                 success += 1
             except Exception as exc:
-                update_batch.append((item.row_index, f"status_failed|{str(exc)[:36]}"))
                 failed += 1
+                update_batch.append((item.row_index, f"status_failed|{str(exc)[:36]}"))
+            completed += 1
             if len(update_batch) >= ROW_BATCH_SIZE:
                 self._emit_update_batch(update_batch)
-            self._emit_process_progress(index + 1, total)
-            if _should_emit_progress(index, total):
-                QThread.msleep(1)
-        self._emit_update_batch(update_batch)
-        return success, failed
+        return success, failed, completed
 
-    def _run_per_item(self, update_batch: list[tuple[int, str]]) -> tuple[int, int]:
+    def _run_per_item(self, update_batch: list[tuple[int, str]]) -> tuple[int, int, int, bool]:
         success = 0
         failed = 0
+        completed = 0
         total = len(self.items)
         for index, item in enumerate(self.items):
+            if self._wait_if_paused_or_stopped():
+                break
             try:
-                if self.permanent:
-                    item.path.unlink()
-                    status = "status_deleted"
-                else:
-                    send2trash(str(item.path))
-                    status = "status_recycled"
+                item.path.unlink()
                 success += 1
-                update_batch.append((item.row_index, status))
+                update_batch.append((item.row_index, "status_deleted"))
             except Exception as exc:
                 failed += 1
                 update_batch.append((item.row_index, f"status_failed|{str(exc)[:36]}"))
+            completed += 1
             if len(update_batch) >= ROW_BATCH_SIZE:
                 self._emit_update_batch(update_batch)
             if _should_emit_progress(index, total):
-                self._emit_process_progress(index + 1, total)
+                self._emit_process_progress(completed, total)
         self._emit_update_batch(update_batch)
-        return success, failed
+        return success, failed, completed, self._stop_event.is_set()
 
 
 class MainWindow(FramelessMainWindow):
@@ -635,6 +710,8 @@ class MainWindow(FramelessMainWindow):
         self._keep_strategy_apply_timer.timeout.connect(self._apply_keep_strategy_change)
         self.table_model = DedupeTableModel(self.file_list, self._display_status, self._table_headers(), self)
         self.is_processing = False
+        self._process_paused = False
+        self._process_stopping = False
         self._scan_thread: QThread | None = None
         self._scan_worker: ScanWorker | None = None
         self._process_thread: QThread | None = None
@@ -777,9 +854,19 @@ class MainWindow(FramelessMainWindow):
         self.btn_start = PrimaryPushButton(self.tr("start_dedupe"), self)
         self.btn_start.setIcon(_pick_icon("DELETE", "PLAY", "SEND"))
         self.btn_start.clicked.connect(self.start_processing)
+        self.btn_pause = PushButton(self.tr("pause_process"), self)
+        self.btn_pause.setIcon(_pick_icon("PAUSE", "PLAY"))
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.clicked.connect(self.toggle_processing_pause)
+        self.btn_stop = PushButton(self.tr("stop_process"), self)
+        self.btn_stop.setIcon(_pick_icon("CANCEL", "CLOSE", "DELETE"))
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.clicked.connect(self.stop_processing)
         row3.addWidget(self.btn_scan)
         row3.addWidget(self.btn_clear)
         row3.addStretch(1)
+        row3.addWidget(self.btn_pause)
+        row3.addWidget(self.btn_stop)
         row3.addWidget(self.btn_start)
         action_layout.addLayout(row3)
 
@@ -986,6 +1073,8 @@ class MainWindow(FramelessMainWindow):
         self.btn_scan.setText(self.tr("rescan"))
         self.btn_clear.setText(self.tr("clear_list"))
         self.btn_start.setText(self.tr("start_dedupe"))
+        self.btn_pause.setText(self.tr("resume_process") if self._process_paused else self.tr("pause_process"))
+        self.btn_stop.setText(self.tr("stop_process"))
         self._set_status_text(self._last_status_key, **self._last_status_kwargs)
 
     def _notify(self, title: str, content: str, is_error: bool = False):
@@ -1320,11 +1409,16 @@ class MainWindow(FramelessMainWindow):
                 return
 
         self.is_processing = True
+        self._process_paused = False
+        self._process_stopping = False
         for row, item in enumerate(self.file_list):
             item.row_index = row
         self.btn_start.setEnabled(False)
         self.btn_scan.setEnabled(False)
         self.btn_clear.setEnabled(False)
+        self.btn_pause.setEnabled(True)
+        self.btn_pause.setText(self.tr("pause_process"))
+        self.btn_stop.setEnabled(True)
         self.progress.setValue(0)
 
         self._process_thread = QThread(self)
@@ -1339,6 +1433,28 @@ class MainWindow(FramelessMainWindow):
         self._process_thread.finished.connect(self._process_thread.deleteLater)
         self._process_thread.finished.connect(self._process_thread_finished)
         self._process_thread.start()
+
+    def toggle_processing_pause(self):
+        if not self.is_processing or self._process_worker is None:
+            return
+        self._process_paused = not self._process_paused
+        self._process_worker.set_paused(self._process_paused)
+        if self._process_paused:
+            self.btn_pause.setText(self.tr("resume_process"))
+            self.status.setText(self.tr("status_paused"))
+        else:
+            self.btn_pause.setText(self.tr("pause_process"))
+
+    def stop_processing(self):
+        if not self.is_processing or self._process_worker is None:
+            return
+        self._process_worker.request_stop()
+        self._process_paused = False
+        self._process_stopping = True
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.setText(self.tr("pause_process"))
+        self.btn_stop.setEnabled(False)
+        self.status.setText(self.tr("status_stopping"))
 
     def _apply_process_updates(self, updates: list[tuple[int, str]]):
         self.table.setUpdatesEnabled(False)
@@ -1355,7 +1471,12 @@ class MainWindow(FramelessMainWindow):
 
     def _update_process_progress(self, percent: int, text: str):
         self.progress.setValue(percent)
-        self.status.setText(f"{self.tr('status_processing')} {text}")
+        if self._process_stopping:
+            self.status.setText(self.tr("status_stopping"))
+        elif self._process_paused:
+            self.status.setText(self.tr("status_paused"))
+        else:
+            self.status.setText(f"{self.tr('status_processing')} {text}")
         self.progress.repaint()
         self.status.repaint()
 
@@ -1365,11 +1486,24 @@ class MainWindow(FramelessMainWindow):
 
     def _apply_processing_finished(self, result: dict):
         self.is_processing = False
+        self._process_paused = False
+        self._process_stopping = False
         self.btn_start.setEnabled(True)
         self.btn_scan.setEnabled(True)
         self.btn_clear.setEnabled(True)
-        self.progress.setValue(100)
-        self._set_status_text("process_done_status", success=result["success"], failed=result["failed"])
+        self.btn_pause.setEnabled(False)
+        self.btn_pause.setText(self.tr("pause_process"))
+        self.btn_stop.setEnabled(False)
+        total = int(result.get("total", 0))
+        completed = int(result.get("completed", total))
+        stopped = bool(result.get("stopped", False))
+        if stopped:
+            percent = int((completed / total) * 100) if total else 0
+            self.progress.setValue(percent)
+            self._set_status_text("status_stopped", success=result["success"], failed=result["failed"])
+        else:
+            self.progress.setValue(100)
+            self._set_status_text("process_done_status", success=result["success"], failed=result["failed"])
         QMessageBox.information(
             self,
             self.tr("process_done_title"),
