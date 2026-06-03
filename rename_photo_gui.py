@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import sys
+from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -13,7 +14,7 @@ from qframelesswindow import FramelessMainWindow, StandardTitleBar
 
 from file_context_menu import install_file_context_menu
 
-from PyQt6.QtCore import QEvent, QObject, QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -65,6 +66,8 @@ SUPPORTED_RENAME_SUFFIXES = IMAGE_SUFFIXES + VIDEO_RENAME_SUFFIXES
 LIVE_VIDEO_STEM_SUFFIXES = ("_HEVC", "_hevc")
 DEFAULT_PHOTO_PREFIX = "IMG"
 DEFAULT_VIDEO_PREFIX = "VID"
+PROCESS_ROW_BATCH_SIZE = 100
+UI_PROCESS_DRAIN_ROWS = 120
 PHOTO_PREFIX_PRESETS = ("IMG", "PXL", "DSC", "PHOTO", "PIC")
 VIDEO_PREFIX_PRESETS = ("VID", "MOV", "VIDEO", "CLIP", "PXL")
 INVALID_FILENAME_CHARS = '<>:"/\\|?*'
@@ -633,7 +636,7 @@ class TargetDropScanWorker(QObject):
 
 
 class ProcessWorker(QObject):
-    row_update = pyqtSignal(int, str, object)
+    row_update_batch = pyqtSignal(object)
     progress_update = pyqtSignal(int, str)
     finished = pyqtSignal(dict)
 
@@ -643,11 +646,17 @@ class ProcessWorker(QObject):
         self.write_timestamps = write_timestamps
         self.prefixes = prefixes or PrefixConfig()
 
+    def _emit_update_batch(self, updates: list[tuple[int, str, object]]):
+        if updates:
+            self.row_update_batch.emit(updates[:])
+            updates.clear()
+
     def run(self):
         success = 0
         failed = 0
         skipped = 0
         total = len(self.items)
+        update_batch: list[tuple[int, str, object]] = []
         _assign_target_paths(self.items, self.prefixes)
 
         for index, item in enumerate(self.items):
@@ -658,7 +667,9 @@ class ProcessWorker(QObject):
             if item.timestamp is None or target_path is None:
                 skipped += 1
                 status = item.status if item.status == "status_no_reference_match" else "status_skipped"
-                self.row_update.emit(row_index, status, None)
+                update_batch.append((row_index, status, None))
+                if len(update_batch) >= PROCESS_ROW_BATCH_SIZE:
+                    self._emit_update_batch(update_batch)
                 if _should_emit_progress(index, total):
                     self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                 continue
@@ -667,13 +678,15 @@ class ProcessWorker(QObject):
                 try:
                     if self.write_timestamps:
                         apply_file_times_only(item.path, item.timestamp)
-                        self.row_update.emit(row_index, "status_timestamped", target_path)
+                        update_batch.append((row_index, "status_timestamped", target_path))
                     else:
-                        self.row_update.emit(row_index, "status_already_named", target_path)
+                        update_batch.append((row_index, "status_already_named", target_path))
                     skipped += 1
                 except Exception as exc:
                     failed += 1
-                    self.row_update.emit(row_index, f"status_failed|{str(exc)[:36]}", target_path)
+                    update_batch.append((row_index, f"status_failed|{str(exc)[:36]}", target_path))
+                if len(update_batch) >= PROCESS_ROW_BATCH_SIZE:
+                    self._emit_update_batch(update_batch)
                 if _should_emit_progress(index, total):
                     self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                 continue
@@ -687,14 +700,17 @@ class ProcessWorker(QObject):
                 item.target_name = target_path.name
                 success += 1
                 status = "status_renamed_timestamped" if self.write_timestamps else "status_renamed"
-                self.row_update.emit(row_index, status, target_path)
+                update_batch.append((row_index, status, target_path))
             except Exception as exc:
                 failed += 1
-                self.row_update.emit(row_index, f"status_failed|{str(exc)[:36]}", target_path)
+                update_batch.append((row_index, f"status_failed|{str(exc)[:36]}", target_path))
 
+            if len(update_batch) >= PROCESS_ROW_BATCH_SIZE:
+                self._emit_update_batch(update_batch)
             if _should_emit_progress(index, total):
                 self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
 
+        self._emit_update_batch(update_batch)
         self.finished.emit({"success": success, "failed": failed, "skipped": skipped})
 
 
@@ -713,6 +729,11 @@ class MainWindow(FramelessMainWindow):
         self._last_status_kwargs: dict = {}
         self.reference_list: list[ReferenceItem] = []
         self.file_list: list[RenameItem] = []
+        self._process_update_queue: deque[tuple[int, str, object]] = deque()
+        self._pending_process_result: dict | None = None
+        self._process_drain_timer = QTimer(self)
+        self._process_drain_timer.setInterval(10)
+        self._process_drain_timer.timeout.connect(self._drain_process_updates)
         self.is_processing = False
         self._reference_scan_thread: QThread | None = None
         self._reference_scan_worker: ReferenceScanWorker | None = None
@@ -1694,6 +1715,9 @@ class MainWindow(FramelessMainWindow):
             self._notify(self.tr("no_pending_title"), self.tr("no_pending_content"), is_error=True)
             return
 
+        self._process_update_queue.clear()
+        self._pending_process_result = None
+        self._process_drain_timer.stop()
         self.is_processing = True
         for button in (
             self.btn_start,
@@ -1715,13 +1739,41 @@ class MainWindow(FramelessMainWindow):
         )
         self._process_worker.moveToThread(self._process_thread)
         self._process_thread.started.connect(self._process_worker.run)
-        self._process_worker.row_update.connect(self._update_row_status)
+        self._process_worker.row_update_batch.connect(self._queue_process_updates)
         self._process_worker.progress_update.connect(self._update_progress)
         self._process_worker.finished.connect(self._processing_finished)
         self._process_worker.finished.connect(self._process_thread.quit)
         self._process_worker.finished.connect(self._process_worker.deleteLater)
         self._process_thread.finished.connect(self._process_thread.deleteLater)
         self._process_thread.start()
+
+    def _queue_process_updates(self, updates: list[tuple[int, str, object]]):
+        self._process_update_queue.extend(updates)
+        if not self._process_drain_timer.isActive():
+            self._process_drain_timer.start()
+
+    def _drain_process_updates(self):
+        updates: list[tuple[int, str, object]] = []
+        while self._process_update_queue and len(updates) < UI_PROCESS_DRAIN_ROWS:
+            updates.append(self._process_update_queue.popleft())
+
+        if updates:
+            self.table.setUpdatesEnabled(False)
+            try:
+                for row, status_text, target_path_obj in updates:
+                    self._update_row_status(row, status_text, target_path_obj)
+            finally:
+                self.table.setUpdatesEnabled(True)
+                self.table.viewport().update()
+
+        if self._process_update_queue:
+            return
+
+        self._process_drain_timer.stop()
+        if self._pending_process_result is not None:
+            result = self._pending_process_result
+            self._pending_process_result = None
+            self._apply_processing_finished(result)
 
     def _update_row_status(self, row: int, status_text: str, target_path_obj: object):
         if not (0 <= row < self.table.rowCount()):
@@ -1750,8 +1802,15 @@ class MainWindow(FramelessMainWindow):
     def _update_progress(self, percent: int, text: str):
         self.progress.setValue(percent)
         self.status.setText(self._display_progress_text(text))
+        self.progress.repaint()
+        self.status.repaint()
 
     def _processing_finished(self, result: dict):
+        self._pending_process_result = result
+        if not self._process_drain_timer.isActive():
+            self._process_drain_timer.start()
+
+    def _apply_processing_finished(self, result: dict):
         self.is_processing = False
         for button in (
             self.btn_start,
