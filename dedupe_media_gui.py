@@ -67,7 +67,6 @@ HASH_CHUNK_SIZE = 1024 * 1024
 ROW_BATCH_SIZE = 100
 UI_APPEND_DRAIN_ROWS = 1000
 UI_UPDATE_DRAIN_ROWS = 200
-RECYCLE_BATCH_SIZE = 25
 HASH_THREAD_OPTIONS = (1, 2, 4, 8, 16)
 COPY_SUFFIX_RE = re.compile(r"\s*\((\d+)\)$")
 TRANSLATIONS = {
@@ -520,7 +519,7 @@ class ProcessWorker(QObject):
                 self.progress_update.emit(100, f"{total}/{total}")
                 self.finished.emit({"success": success, "failed": failed})
                 return
-            success, failed = self._run_recycle_batches(update_batch)
+            success, failed = self._run_recycle_items(update_batch)
             self.finished.emit({"success": success, "failed": failed})
             return
 
@@ -531,46 +530,13 @@ class ProcessWorker(QObject):
         percent = int((completed / total) * 100) if total else 0
         self.progress_update.emit(percent, f"{completed}/{total}")
 
-    def _run_recycle_batches(self, update_batch: list[tuple[int, str]]) -> tuple[int, int]:
+    def _run_recycle_items(self, update_batch: list[tuple[int, str]]) -> tuple[int, int]:
         success = 0
         failed = 0
-        completed = 0
         total = len(self.items)
         self._emit_process_progress(0, total)
 
-        for start in range(0, total, RECYCLE_BATCH_SIZE):
-            batch = self.items[start : start + RECYCLE_BATCH_SIZE]
-            try:
-                send2trash([str(item.path) for item in batch])
-                for item in batch:
-                    success += 1
-                    completed += 1
-                    update_batch.append((item.row_index, "status_recycled"))
-            except TypeError:
-                batch_success, batch_failed, batch_completed = self._run_recycle_items(batch, update_batch)
-                success += batch_success
-                failed += batch_failed
-                completed += batch_completed
-            except Exception:
-                batch_success, batch_failed, batch_completed = self._run_recycle_items(batch, update_batch)
-                success += batch_success
-                failed += batch_failed
-                completed += batch_completed
-
-            self._emit_update_batch(update_batch)
-            self._emit_process_progress(completed, total)
-
-        return success, failed
-
-    def _run_recycle_items(
-        self,
-        items: list[DedupeItem],
-        update_batch: list[tuple[int, str]],
-    ) -> tuple[int, int, int]:
-        success = 0
-        failed = 0
-        completed = 0
-        for item in items:
+        for index, item in enumerate(self.items):
             try:
                 send2trash(str(item.path))
                 update_batch.append((item.row_index, "status_recycled"))
@@ -578,8 +544,13 @@ class ProcessWorker(QObject):
             except Exception as exc:
                 update_batch.append((item.row_index, f"status_failed|{str(exc)[:36]}"))
                 failed += 1
-            completed += 1
-        return success, failed, completed
+            if len(update_batch) >= ROW_BATCH_SIZE:
+                self._emit_update_batch(update_batch)
+            self._emit_process_progress(index + 1, total)
+            if _should_emit_progress(index, total):
+                QThread.msleep(1)
+        self._emit_update_batch(update_batch)
+        return success, failed
 
     def _run_per_item(self, update_batch: list[tuple[int, str]]) -> tuple[int, int]:
         success = 0
@@ -1243,6 +1214,8 @@ class MainWindow(FramelessMainWindow):
     def _update_process_progress(self, percent: int, text: str):
         self.progress.setValue(percent)
         self.status.setText(f"{self.tr('status_processing')} {text}")
+        self.progress.repaint()
+        self.status.repaint()
 
     def _processing_finished(self, result: dict):
         self._pending_process_result = result
