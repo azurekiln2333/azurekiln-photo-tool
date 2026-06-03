@@ -824,10 +824,6 @@ class MainWindow(FramelessMainWindow):
     def _init_default_output_dir(self):
         pics_dir = _get_windows_pictures_dir() or (Path.home() / "Pictures")
         base = _split_output_dir_for(pics_dir)
-        try:
-            base.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
         self.output_edit.setText(str(base))
 
     def _settings_payload(self) -> dict:
@@ -911,7 +907,6 @@ class MainWindow(FramelessMainWindow):
         folder = QFileDialog.getExistingDirectory(self, self.tr("dialog_choose_output"))
         if not folder:
             return
-        Path(folder).mkdir(parents=True, exist_ok=True)
         self.output_edit.setText(folder)
         self._save_settings()
 

@@ -1100,17 +1100,12 @@ class MainWindow(FramelessMainWindow):
     def _init_default_output_dir(self):
         pics_dir = _get_windows_pictures_dir() or (Path.home() / "Pictures")
         base = _flyme_output_dir_for(pics_dir)
-        try:
-            base.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            pass
         self.output_edit.setText(str(base))
         self._set_status_text("waiting_drop")
 
     def choose_output(self):
         path = QFileDialog.getExistingDirectory(self, self.tr("dialog_choose_output"))
         if path:
-            Path(path).mkdir(parents=True, exist_ok=True)
             self.output_edit.setText(path)
             self._save_settings()
 
@@ -1119,12 +1114,8 @@ class MainWindow(FramelessMainWindow):
         if source_dir is None:
             return
         target = _flyme_output_dir_for(source_dir)
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            self.output_edit.setText(str(target))
-            self._save_settings()
-        except Exception:
-            return
+        self.output_edit.setText(str(target))
+        self._save_settings()
 
     def _selected_items(self) -> list[PhotoItem]:
         selected: list[PhotoItem] = []
