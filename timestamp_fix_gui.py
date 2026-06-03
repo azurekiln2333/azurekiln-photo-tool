@@ -676,6 +676,32 @@ class ScanWorker(QObject):
         self.finished.emit(len(items))
 
 
+class DropScanWorker(QObject):
+    row_ready = pyqtSignal(object)
+    finished = pyqtSignal(int)
+
+    def __init__(self, paths: list[Path], recursive: bool, existing: set[Path]):
+        super().__init__()
+        self.paths = paths
+        self.recursive = recursive
+        self.existing = existing
+
+    def run(self):
+        seen: set[Path] = set(self.existing)
+        items: list[TimestampItem] = []
+        for file_path, source_root in _iter_paths(self.paths, self.recursive):
+            resolved = _safe_resolve(file_path)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            items.append(_make_item(file_path, source_root))
+
+        for item in sorted(items, key=lambda value: str(value.rel_path)):
+            self.row_ready.emit(item)
+
+        self.finished.emit(len(items))
+
+
 class ProcessWorker(QObject):
     row_update = pyqtSignal(int, str)
     progress_update = pyqtSignal(int, str)
@@ -744,6 +770,8 @@ class MainWindow(FramelessMainWindow):
         self.is_processing = False
         self._scan_thread: QThread | None = None
         self._scan_worker: ScanWorker | None = None
+        self._drop_thread: QThread | None = None
+        self._drop_worker: DropScanWorker | None = None
         self._process_thread: QThread | None = None
         self._process_worker: ProcessWorker | None = None
         self._settings_path = _get_settings_path()
@@ -944,6 +972,15 @@ class MainWindow(FramelessMainWindow):
         self._last_status_kwargs = kwargs
         self.status.setText(self.tr(key, **kwargs))
 
+    def _thread_is_running(self, thread: QThread | None) -> bool:
+        try:
+            return thread is not None and thread.isRunning()
+        except RuntimeError:
+            return False
+
+    def _is_busy(self) -> bool:
+        return self.is_processing or self._thread_is_running(self._scan_thread) or self._thread_is_running(self._drop_thread)
+
     def _init_default_input_dir(self):
         pics_dir = _get_windows_pictures_dir() or (Path.home() / "Pictures")
         self.input_edit.setText(str(pics_dir))
@@ -1071,7 +1108,7 @@ class MainWindow(FramelessMainWindow):
         self.scan_files()
 
     def clear_list(self):
-        if self.is_processing:
+        if self._is_busy():
             return
         self.file_list.clear()
         self.table.setRowCount(0)
@@ -1079,7 +1116,7 @@ class MainWindow(FramelessMainWindow):
         self._set_status_text("list_cleared")
 
     def add_dropped_paths(self, paths: list[Path]):
-        if self.is_processing:
+        if self._is_busy():
             return
         first_dir = next((p for p in paths if p.is_dir()), None)
         if first_dir is None:
@@ -1090,23 +1127,23 @@ class MainWindow(FramelessMainWindow):
             self._save_settings()
 
         existing = {_safe_resolve(item.path) for item in self.file_list}
-        added = 0
-        for file_path, source_root in _iter_paths(paths, self.include_subdirs_check.isChecked()):
-            resolved = _safe_resolve(file_path)
-            if resolved in existing:
-                continue
-            self._append_scan_row(_make_item(file_path, source_root))
-            existing.add(resolved)
-            added += 1
+        self.progress.setValue(0)
+        self._set_status_text("scanning")
 
-        if added:
-            self.progress.setValue(0)
-            self._set_status_text("drop_added", added=added, count=len(self.file_list))
-        else:
-            self._set_status_text("drop_no_new")
+        self._drop_thread = QThread(self)
+        self._drop_worker = DropScanWorker(paths, self.include_subdirs_check.isChecked(), existing)
+        self._drop_worker.moveToThread(self._drop_thread)
+        self._drop_thread.started.connect(self._drop_worker.run)
+        self._drop_worker.row_ready.connect(self._append_scan_row)
+        self._drop_worker.finished.connect(self._drop_finished)
+        self._drop_worker.finished.connect(self._drop_thread.quit)
+        self._drop_worker.finished.connect(self._drop_worker.deleteLater)
+        self._drop_thread.finished.connect(self._drop_thread.deleteLater)
+        self._drop_thread.finished.connect(self._drop_thread_finished)
+        self._drop_thread.start()
 
     def scan_files(self):
-        if self.is_processing:
+        if self._is_busy():
             return
         input_dir_text = self.input_edit.text().strip()
         if not input_dir_text:
@@ -1142,6 +1179,17 @@ class MainWindow(FramelessMainWindow):
         self.table.setItem(row, 3, QTableWidgetItem(self._display_status(item.status)))
         self.file_list.append(item)
 
+    def _drop_finished(self, added: int):
+        if added:
+            self.progress.setValue(0)
+            self._set_status_text("drop_added", added=added, count=len(self.file_list))
+        else:
+            self._set_status_text("drop_no_new")
+
+    def _drop_thread_finished(self):
+        self._drop_worker = None
+        self._drop_thread = None
+
     def _scan_finished(self, count: int):
         if count == 0:
             self._set_status_text("scan_none_status")
@@ -1150,7 +1198,7 @@ class MainWindow(FramelessMainWindow):
         self._set_status_text("scan_done_status", count=count)
 
     def start_processing(self):
-        if self.is_processing:
+        if self._is_busy():
             return
         if not self.file_list:
             self._notify(self.tr("cannot_start_title"), self.tr("cannot_start_content"), is_error=True)

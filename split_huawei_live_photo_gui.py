@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 APP_NAME = "SplitHuaweiLivePhotoGUI"
 IMAGE_SUFFIXES = (".jpg", ".jpeg")
 VIDEO_SUFFIXES = (".mp4",)
+LIVE_VIDEO_STEM_SUFFIXES = ("_HEVC", "_hevc", "")
 SPLIT_OUTPUT_DIR_NAME = "AzureKiln_HuaweiLivePhotoSplit_Output"
 LEGACY_SPLIT_OUTPUT_DIR_NAMES = ("Split_Output", "HuaweiLivePhotoSplit_Output")
 SPLIT_GENERATED_OUTPUT_DIR_NAMES = {SPLIT_OUTPUT_DIR_NAME, *LEGACY_SPLIT_OUTPUT_DIR_NAMES}
@@ -204,11 +205,12 @@ def _is_image_file(path: Path) -> bool:
 
 
 def _find_matching_video(img_path: Path) -> Path | None:
-    for suffix in VIDEO_SUFFIXES:
-        for candidate_suffix in (suffix, suffix.upper()):
-            video_path = img_path.with_suffix(candidate_suffix)
-            if video_path.exists():
-                return video_path
+    for stem_suffix in LIVE_VIDEO_STEM_SUFFIXES:
+        for suffix in VIDEO_SUFFIXES:
+            for candidate_suffix in (suffix, suffix.upper()):
+                video_path = img_path.with_name(f"{img_path.stem}{stem_suffix}{candidate_suffix}")
+                if video_path.exists():
+                    return video_path
     return None
 
 
@@ -278,6 +280,46 @@ class ScanWorker(QObject):
             self.row_ready.emit(task)
 
         self.finished.emit(len(img_files), processable)
+
+
+class DropScanWorker(QObject):
+    row_ready = pyqtSignal(dict)
+    finished = pyqtSignal(int)
+
+    def __init__(self, paths: list[Path], recursive: bool, output_dir: Path | None, existing: set[Path]):
+        super().__init__()
+        self.paths = paths
+        self.recursive = recursive
+        self.output_dir = output_dir.resolve() if output_dir is not None else None
+        self.existing = existing
+
+    def run(self):
+        img_files: list[tuple[Path, Path | None]] = []
+        for path in self.paths:
+            if path.is_dir():
+                iterator = path.rglob("*") if self.recursive else path.glob("*")
+                img_files.extend(
+                    (candidate, path)
+                    for candidate in iterator
+                    if _is_image_file(candidate) and not _is_generated_output_path(candidate, path, self.output_dir)
+                )
+            elif _is_image_file(path):
+                if not _is_generated_output_path(path, path.parent, self.output_dir):
+                    img_files.append((path, path.parent))
+
+        seen: set[Path] = set(self.existing)
+        tasks: list[dict] = []
+        for img_path, base_dir in sorted(img_files, key=lambda item: str(item[0])):
+            resolved = _safe_resolve(img_path)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            tasks.append(_make_task(img_path, base_dir))
+
+        for task in tasks:
+            self.row_ready.emit(task)
+
+        self.finished.emit(len(tasks))
 
 
 class ProcessWorker(QObject):
@@ -384,6 +426,8 @@ class MainWindow(FramelessMainWindow):
         self.is_processing = False
         self._scan_thread: QThread | None = None
         self._scan_worker: ScanWorker | None = None
+        self._drop_thread: QThread | None = None
+        self._drop_worker: DropScanWorker | None = None
         self._process_thread: QThread | None = None
         self._process_worker: ProcessWorker | None = None
         self._settings_path = _get_settings_path()
@@ -658,6 +702,15 @@ class MainWindow(FramelessMainWindow):
         self._last_status_kwargs = kwargs
         self.status.setText(self.tr(key, **kwargs))
 
+    def _thread_is_running(self, thread: QThread | None) -> bool:
+        try:
+            return thread is not None and thread.isRunning()
+        except RuntimeError:
+            return False
+
+    def _is_busy(self) -> bool:
+        return self.is_processing or self._thread_is_running(self._scan_thread) or self._thread_is_running(self._drop_thread)
+
     def _on_language_changed(self, _index: int):
         lang = self.language_combo.currentData()
         if lang not in SUPPORTED_LANGUAGES or lang == self.lang:
@@ -831,7 +884,7 @@ class MainWindow(FramelessMainWindow):
         self._save_settings()
 
     def clear_list(self):
-        if self.is_processing:
+        if self._is_busy():
             return
         self.file_list.clear()
         self.table.setRowCount(0)
@@ -839,7 +892,7 @@ class MainWindow(FramelessMainWindow):
         self._set_status_text("list_cleared")
 
     def add_dropped_paths(self, paths: list[Path]):
-        if self.is_processing:
+        if self._is_busy():
             return
 
         recursive = self.include_subdirs_check.isChecked()
@@ -851,37 +904,23 @@ class MainWindow(FramelessMainWindow):
             self._save_settings()
 
         existing = {_safe_resolve(task["img_path"]) for task in self.file_list}
-        img_files: list[tuple[Path, Path | None]] = []
+        self.progress.setValue(0)
+        self._set_status_text("scanning")
 
-        for path in paths:
-            if path.is_dir():
-                iterator = path.rglob("*") if recursive else path.glob("*")
-                img_files.extend(
-                    (candidate, path)
-                    for candidate in iterator
-                    if _is_image_file(candidate) and not _is_generated_output_path(candidate, path, output_dir)
-                )
-            elif _is_image_file(path):
-                if not _is_generated_output_path(path, path.parent, output_dir):
-                    img_files.append((path, path.parent))
-
-        added = 0
-        for img_path, base_dir in sorted(img_files, key=lambda item: str(item[0])):
-            resolved = _safe_resolve(img_path)
-            if resolved in existing:
-                continue
-            self._append_scan_row(_make_task(img_path, base_dir))
-            existing.add(resolved)
-            added += 1
-
-        if added:
-            self.progress.setValue(0)
-            self._set_status_text("drop_added", added=added, count=len(self.file_list))
-        else:
-            self._set_status_text("drop_no_new")
+        self._drop_thread = QThread(self)
+        self._drop_worker = DropScanWorker(paths, recursive, output_dir, existing)
+        self._drop_worker.moveToThread(self._drop_thread)
+        self._drop_thread.started.connect(self._drop_worker.run)
+        self._drop_worker.row_ready.connect(self._append_scan_row)
+        self._drop_worker.finished.connect(self._drop_finished)
+        self._drop_worker.finished.connect(self._drop_thread.quit)
+        self._drop_worker.finished.connect(self._drop_worker.deleteLater)
+        self._drop_thread.finished.connect(self._drop_thread.deleteLater)
+        self._drop_thread.finished.connect(self._drop_thread_finished)
+        self._drop_thread.start()
 
     def scan_files(self):
-        if self.is_processing:
+        if self._is_busy():
             return
         input_dir_text = self.input_edit.text().strip()
         if not input_dir_text:
@@ -920,6 +959,17 @@ class MainWindow(FramelessMainWindow):
         self.table.setItem(row, 3, QTableWidgetItem(self._display_status(task["status"])))
         self.file_list.append(task)
 
+    def _drop_finished(self, added: int):
+        if added:
+            self.progress.setValue(0)
+            self._set_status_text("drop_added", added=added, count=len(self.file_list))
+        else:
+            self._set_status_text("drop_no_new")
+
+    def _drop_thread_finished(self):
+        self._drop_worker = None
+        self._drop_thread = None
+
     def _scan_finished(self, count: int, processable: int):
         if count == 0:
             self._set_status_text("scan_none_status")
@@ -929,7 +979,7 @@ class MainWindow(FramelessMainWindow):
         self._notify(self.tr("scan_complete_title"), self.tr("scan_done_content", count=count, processable=processable))
 
     def start_processing(self):
-        if self.is_processing:
+        if self._is_busy():
             return
         if not self.file_list:
             self._notify(self.tr("cannot_start_title"), self.tr("cannot_start_content"), is_error=True)

@@ -15,6 +15,8 @@ from PIL import Image
 from pathlib import Path
 
 XMP_IDENTIFIER = b'http://ns.adobe.com/xap/1.0/\x00'
+VIDEO_EXTENSIONS = (".mp4", ".MP4", ".mov", ".MOV")
+LIVE_VIDEO_STEM_SUFFIXES = ("_HEVC", "_hevc", "")
 
 
 def find_jpeg_end(data: bytes) -> int:
@@ -143,6 +145,15 @@ def make_live_photo(jpg_path: str, mp4_path: str, output_path: str):
         f.write(bytes(result))
 
 
+def find_matching_video(jpg_path: Path) -> Path | None:
+    for stem_suffix in LIVE_VIDEO_STEM_SUFFIXES:
+        for extension in VIDEO_EXTENSIONS:
+            video_path = jpg_path.with_name(f"{jpg_path.stem}{stem_suffix}{extension}")
+            if video_path.exists():
+                return video_path
+    return None
+
+
 def process_directory(input_dir: str, output_dir: str):
     """Process all JPG+MP4 pairs in a directory."""
     in_path = Path(input_dir)
@@ -171,12 +182,10 @@ def process_directory(input_dir: str, output_dir: str):
 
     for jpg_path in jpg_files:
         # 尝试寻找同名的 mp4 文件 (支持大小写)
-        mp4_path = jpg_path.with_suffix('.mp4')
-        if not mp4_path.exists():
-            mp4_path = jpg_path.with_suffix('.MP4')
+        mp4_path = find_matching_video(jpg_path)
 
         # 如果同名 MP4 存在，进行合并
-        if mp4_path.exists():
+        if mp4_path is not None:
             output_path = out_path / jpg_path.name
             print(f"合并中: {jpg_path.name} + {mp4_path.name} -> {output_path.name}")
             try:

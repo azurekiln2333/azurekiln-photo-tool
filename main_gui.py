@@ -254,6 +254,85 @@ class DropScanWorker(QObject):
         self.finished.emit(added, total)
 
 
+class ExportWorker(QObject):
+    progress_update = pyqtSignal(int, int, object)
+    finished = pyqtSignal(dict)
+
+    def __init__(self, items: list[PhotoItem], target_dir: Path, action: str):
+        super().__init__()
+        self.items = items
+        self.target_dir = target_dir
+        self.action = action
+
+    def run(self):
+        def progress_cb(i: int, n: int, item: PhotoItem):
+            self.progress_update.emit(i, n, item)
+
+        success, failed = export_items(self.items, self.target_dir, self.action, progress_cb)
+        self.finished.emit({"success": success, "failed": failed, "action": self.action})
+
+
+class OutputWorker(QObject):
+    row_update = pyqtSignal(str, object)
+    progress_update = pyqtSignal(int, int, object, str)
+    finished = pyqtSignal(dict)
+
+    def __init__(
+        self,
+        engine: LivePhotoFixTool,
+        items: list[PhotoItem],
+        output_dir: Path,
+        exist_action: str,
+    ):
+        super().__init__()
+        self.engine = engine
+        self.items = items
+        self.output_dir = output_dir
+        self.exist_action = exist_action
+        self.paused = False
+        self.stop_requested = False
+
+    def set_paused(self, paused: bool):
+        self.paused = paused
+
+    def stop(self):
+        self.stop_requested = True
+        self.paused = False
+
+    def run(self):
+        def progress_cb(i: int, n: int, item: PhotoItem, status: str):
+            self.progress_update.emit(i, n, item, status)
+            self.row_update.emit(item.item_id, item)
+
+        def should_pause():
+            return self.paused
+
+        def should_stop():
+            return self.stop_requested
+
+        def idle_cb():
+            QThread.msleep(50)
+
+        success, skipped, failed = output_items(
+            self.engine,
+            self.items,
+            self.output_dir,
+            self.exist_action,
+            progress_cb,
+            should_pause,
+            should_stop,
+            idle_cb,
+        )
+        self.finished.emit(
+            {
+                "success": success,
+                "skipped": skipped,
+                "failed": failed,
+                "stopped": self.stop_requested,
+            }
+        )
+
+
 def _import_fluent():
     module_candidates = (
         ("qfluentwidgetspro", True),
@@ -349,6 +428,10 @@ class MainWindow(FramelessMainWindow):
         self.items: dict[str, PhotoItem] = {}
         self._drop_thread: QThread | None = None
         self._drop_worker: DropScanWorker | None = None
+        self._export_thread: QThread | None = None
+        self._export_worker: ExportWorker | None = None
+        self._output_thread: QThread | None = None
+        self._output_worker: OutputWorker | None = None
         self._suspend_selection_sync = False
         self._suspend_settings_save = False
         self._settings_path = _get_settings_path()
@@ -627,6 +710,19 @@ class MainWindow(FramelessMainWindow):
         self._last_status_key = key
         self._last_status_kwargs = kwargs
         self.status.setText(self.tr(key, **kwargs))
+
+    def _thread_is_running(self, thread: QThread | None) -> bool:
+        try:
+            return thread is not None and thread.isRunning()
+        except RuntimeError:
+            return False
+
+    def _is_busy(self) -> bool:
+        return (
+            self._fix_running
+            or self._thread_is_running(self._drop_thread)
+            or self._thread_is_running(self._export_thread)
+        )
 
     def _display_status(self, status: str) -> str:
         key = status
@@ -1373,7 +1469,7 @@ class MainWindow(FramelessMainWindow):
         return existed
 
     def _start_drop_worker(self, paths: list[Path]):
-        if self._drop_thread is not None and self._drop_thread.isRunning():
+        if self._is_busy():
             self._notify(self.tr("busy_title"), self.tr("busy_content"), is_error=True)
             return
 
@@ -1397,6 +1493,7 @@ class MainWindow(FramelessMainWindow):
         self._drop_worker.finished.connect(self._drop_thread.quit)
         self._drop_worker.finished.connect(self._drop_worker.deleteLater)
         self._drop_thread.finished.connect(self._drop_thread.deleteLater)
+        self._drop_thread.finished.connect(self._drop_thread_finished)
         self._drop_thread.start()
 
     def _on_drop_batch_ready(self, batch):
@@ -1417,10 +1514,14 @@ class MainWindow(FramelessMainWindow):
         else:
             self._set_status_text("drop_done_status", added=added, total=total, count=len(self.items))
             self._notify(self.tr("drop_done_title"), self.tr("added_count", added=added, total=total))
+
+    def _drop_thread_finished(self):
         self._drop_worker = None
         self._drop_thread = None
 
     def clear_list(self):
+        if self._is_busy():
+            return
         self.items.clear()
         self.table.setRowCount(0)
         self.progress.setValue(0)
@@ -1470,6 +1571,8 @@ class MainWindow(FramelessMainWindow):
         if not self._fix_running:
             return
         self._fix_paused = not self._fix_paused
+        if self._output_worker is not None:
+            self._output_worker.set_paused(self._fix_paused)
         self.btn_pause.setText(self.tr("resume_fix") if self._fix_paused else self.tr("pause_fix"))
         self.btn_pause.setIcon(_pick_icon("PLAY", "PLAY_SOLID") if self._fix_paused else _pick_icon("PAUSE", "PAUSE_BOLD"))
         if self._fix_paused:
@@ -1480,11 +1583,15 @@ class MainWindow(FramelessMainWindow):
             return
         self._fix_stop_requested = True
         self._fix_paused = False
+        if self._output_worker is not None:
+            self._output_worker.stop()
         self.btn_pause.setText(self.tr("pause_fix"))
         self._set_status_text("fix_stopping_status")
-        QApplication.processEvents()
 
     def export_checked(self, action: str):
+        if self._is_busy():
+            self._notify(self.tr("busy_title"), self.tr("busy_content"), is_error=True)
+            return
         selected = self._selected_items()
         if not selected:
             QMessageBox.warning(self, self.tr("hint"), self.tr("select_export_first"))
@@ -1494,20 +1601,45 @@ class MainWindow(FramelessMainWindow):
         if not target:
             return
 
-        def progress_cb(i, n, item):
-            self.progress.setValue(int(i * 100 / n))
-            key = "copying" if action == "copy" else "moving"
-            self._set_status_text(key, i=i, n=n, name=str(item.rel_path))
-            QApplication.processEvents()
+        self._set_fix_running_state(True)
+        self.btn_pause.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+        self.progress.setValue(0)
+        self._export_thread = QThread(self)
+        self._export_worker = ExportWorker(selected, Path(target), action)
+        self._export_worker.moveToThread(self._export_thread)
+        self._export_thread.started.connect(self._export_worker.run)
+        self._export_worker.progress_update.connect(self._on_export_progress)
+        self._export_worker.finished.connect(self._export_finished)
+        self._export_worker.finished.connect(self._export_thread.quit)
+        self._export_worker.finished.connect(self._export_worker.deleteLater)
+        self._export_thread.finished.connect(self._export_thread.deleteLater)
+        self._export_thread.finished.connect(self._export_thread_finished)
+        self._export_thread.start()
 
-        s, f = export_items(selected, Path(target), action, progress_cb)
+    def _on_export_progress(self, i: int, n: int, item_obj: object):
+        item = item_obj
+        self.progress.setValue(int(i * 100 / n) if n else 0)
+        action = self._export_worker.action if self._export_worker is not None else "copy"
+        key = "copying" if action == "copy" else "moving"
+        self._set_status_text(key, i=i, n=n, name=str(item.rel_path))
+
+    def _export_finished(self, result: dict):
+        s = result["success"]
+        f = result["failed"]
         self.progress.setValue(100)
         self._set_status_text("export_done_status", success=s, failed=f)
         self._notify(self.tr("export_done_title"), self.tr("success_failed", success=s, failed=f))
+        self._set_fix_running_state(False)
         self._refresh_table()
 
+    def _export_thread_finished(self):
+        self._export_worker = None
+        self._export_thread = None
+
     def fix_checked(self):
-        if self._fix_running:
+        if self._is_busy():
+            self._notify(self.tr("busy_title"), self.tr("busy_content"), is_error=True)
             return
 
         dst = self.output_edit.text().strip()
@@ -1521,41 +1653,45 @@ class MainWindow(FramelessMainWindow):
             return
 
         exist_action = "skip" if self.skip_radio.isChecked() else "overwrite"
-
-        def progress_cb(i, n, item, st):
-            self.progress.setValue(int(i * 100 / n))
-            self._set_row_status(item.item_id, st)
-            self._set_status_text("fixing", i=i, n=n, name=str(item.rel_path), status=self._display_status(st))
-            QApplication.processEvents()
-
-        def should_pause():
-            return self._fix_paused
-
-        def should_stop():
-            return self._fix_stop_requested
-
-        def idle_cb():
-            QApplication.processEvents()
-
         self._fix_paused = False
         self._fix_stop_requested = False
         self._set_fix_running_state(True)
+        self.progress.setValue(0)
 
-        try:
-            s, skip, f = output_items(
-                self.engine,
-                selected,
-                Path(dst),
-                exist_action,
-                progress_cb,
-                should_pause,
-                should_stop,
-                idle_cb,
-            )
-            stopped = self._fix_stop_requested
-        finally:
-            self._set_fix_running_state(False)
+        self._output_thread = QThread(self)
+        self._output_worker = OutputWorker(self.engine, selected, Path(dst), exist_action)
+        self._output_worker.moveToThread(self._output_thread)
+        self._output_thread.started.connect(self._output_worker.run)
+        self._output_worker.row_update.connect(self._on_output_row_update)
+        self._output_worker.progress_update.connect(self._on_output_progress)
+        self._output_worker.finished.connect(self._output_finished)
+        self._output_worker.finished.connect(self._output_thread.quit)
+        self._output_worker.finished.connect(self._output_worker.deleteLater)
+        self._output_thread.finished.connect(self._output_thread.deleteLater)
+        self._output_thread.finished.connect(self._output_thread_finished)
+        self._output_thread.start()
 
+    def _on_output_row_update(self, item_id: str, item_obj: object):
+        self.items[item_id] = item_obj
+
+    def _on_output_progress(self, i: int, n: int, item_obj: object, status_text: str):
+        item = item_obj
+        self.progress.setValue(int(i * 100 / n) if n else 0)
+        self._set_row_status(item.item_id, status_text)
+        self._set_status_text(
+            "fixing",
+            i=i,
+            n=n,
+            name=str(item.rel_path),
+            status=self._display_status(status_text),
+        )
+
+    def _output_finished(self, result: dict):
+        s = result["success"]
+        skip = result["skipped"]
+        f = result["failed"]
+        stopped = result["stopped"]
+        self._set_fix_running_state(False)
         if stopped:
             self._set_status_text("fix_stopped_status", success=s, failed=f, skipped=skip)
             self._notify(self.tr("fix_stopped_title"), self.tr("fix_stopped_content", success=s, failed=f, skipped=skip), is_error=True)
@@ -1564,6 +1700,10 @@ class MainWindow(FramelessMainWindow):
             self._set_status_text("fix_done_status", success=s, failed=f, skipped=skip)
             self._notify(self.tr("fix_done_title"), self.tr("fix_done_content", success=s, failed=f, skipped=skip))
         self._refresh_table()
+
+    def _output_thread_finished(self):
+        self._output_worker = None
+        self._output_thread = None
 
 
 def main():

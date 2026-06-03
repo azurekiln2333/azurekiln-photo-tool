@@ -159,16 +159,32 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
+def _live_pair_stem(path: Path) -> str:
+    stem = path.stem.lower()
+    if _is_hevc_video(path):
+        return stem[:-5] or stem
+    return stem
+
+
+def _is_hevc_video(path: Path) -> bool:
+    return path.suffix.lower() in {".mp4", ".mov"} and path.stem.lower().endswith("_hevc")
+
+
 def _pair_by_stem(paths: list[Path]) -> tuple[list[tuple[Path, Path]], list[Path], list[Path]]:
     images = [p for p in paths if p.suffix.lower() in {".jpg", ".jpeg"}]
     videos = [p for p in paths if p.suffix.lower() in {".mp4", ".mov"}]
-    video_by_stem = {p.stem.lower(): p for p in videos}
+    video_by_exact_stem = {p.stem.lower(): p for p in videos}
+    hevc_video_by_live_stem: dict[str, Path] = {}
+    for video in videos:
+        if _is_hevc_video(video):
+            hevc_video_by_live_stem.setdefault(_live_pair_stem(video), video)
     pairs: list[tuple[Path, Path]] = []
     unpaired_images: list[Path] = []
     used_videos: set[Path] = set()
 
     for image in images:
-        video = video_by_stem.get(image.stem.lower())
+        image_stem = image.stem.lower()
+        video = hevc_video_by_live_stem.get(image_stem) or video_by_exact_stem.get(image_stem)
         if video:
             pairs.append((image, video))
             used_videos.add(video)

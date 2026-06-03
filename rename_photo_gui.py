@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QMenu,
     QMessageBox,
     QTableWidgetItem,
     QVBoxLayout,
@@ -58,6 +60,12 @@ from timestamp_fix_gui import (
 APP_NAME = "RenamePhotoGUI"
 VIDEO_RENAME_SUFFIXES = (".mp4", ".mov")
 SUPPORTED_RENAME_SUFFIXES = IMAGE_SUFFIXES + VIDEO_RENAME_SUFFIXES
+LIVE_VIDEO_STEM_SUFFIXES = ("_HEVC", "_hevc")
+DEFAULT_PHOTO_PREFIX = "IMG"
+DEFAULT_VIDEO_PREFIX = "VID"
+PHOTO_PREFIX_PRESETS = ("IMG", "PXL", "DSC", "PHOTO", "PIC")
+VIDEO_PREFIX_PRESETS = ("VID", "MOV", "VIDEO", "CLIP", "PXL")
+INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 COMPLETED_STATUSES = {
     "status_renamed",
     "status_renamed_timestamped",
@@ -81,6 +89,9 @@ TRANSLATIONS = {
         "choose_target": "选择待重命名目录",
         "scan_subdirs": "扫描子目录",
         "require_reference_match": "必须匹配原始文件",
+        "photo_prefix": "照片前缀",
+        "video_prefix": "视频前缀",
+        "prefix_presets": "常用",
         "reference_drop_hint": "原始文件区：拖入保留正确时间信息的照片或文件夹，只读取信息，不改名。",
         "target_drop_hint": "待重命名区：拖入需要改名的照片或文件夹，按匹配到的原始文件时间生成 IMG_年月日_时分秒。",
         "table_reference_file": "原始文件",
@@ -149,6 +160,9 @@ TRANSLATIONS = {
         "choose_target": "Choose targets",
         "scan_subdirs": "Scan subfolders",
         "require_reference_match": "Require original match",
+        "photo_prefix": "Photo prefix",
+        "video_prefix": "Video prefix",
+        "prefix_presets": "Presets",
         "reference_drop_hint": "Original area: drop photos or folders with correct timestamps. These files are only read.",
         "target_drop_hint": "Target area: drop photos or folders to rename as IMG_yyyyMMdd_HHmmss from matched originals.",
         "table_reference_file": "Original file",
@@ -286,12 +300,25 @@ class ReferenceIndex:
     stem: dict[str, ReferenceItem]
 
 
+@dataclass(frozen=True)
+class PrefixConfig:
+    photo: str = DEFAULT_PHOTO_PREFIX
+    video: str = DEFAULT_VIDEO_PREFIX
+
+
 def _get_settings_path() -> Path:
     if sys.platform == "win32":
         appdata = os.environ.get("APPDATA")
         if appdata:
             return Path(appdata) / APP_NAME / "settings.json"
     return Path.home() / ".config" / APP_NAME / "settings.json"
+
+
+def _should_emit_progress(index: int, total: int) -> bool:
+    if total <= 100:
+        return True
+    step = max(1, total // 100)
+    return (index + 1) % step == 0 or index + 1 == total
 
 
 def _pick_icon(*names: str):
@@ -316,30 +343,70 @@ def _key_text(value: str) -> str:
 
 
 def _rel_stem_key(path: Path, source_root: Path | None) -> str:
-    return _key_text(str(_relative_path(path, source_root).with_suffix("")))
+    return _key_text(str(_rel_stem_match_path(path, source_root)))
 
 
 def _stem_key(path: Path) -> str:
-    return path.stem.casefold()
+    return _live_pair_stem(path).casefold()
 
 
-def _target_prefix_for(path: Path) -> str:
-    return "VID" if path.suffix.lower() in VIDEO_RENAME_SUFFIXES else "IMG"
+def _is_hevc_video_path(path: Path) -> bool:
+    stem_key = path.stem.casefold()
+    return path.suffix.lower() in VIDEO_RENAME_SUFFIXES and any(
+        stem_key.endswith(suffix.casefold()) for suffix in LIVE_VIDEO_STEM_SUFFIXES
+    )
 
 
-def _target_stem(path: Path, timestamp: float) -> str:
-    return datetime.fromtimestamp(timestamp).strftime(f"{_target_prefix_for(path)}_%Y%m%d_%H%M%S")
+def _reference_match_priority(item: ReferenceItem) -> int:
+    if _is_hevc_video_path(item.path):
+        return 2
+    if item.path.suffix.lower() in VIDEO_RENAME_SUFFIXES:
+        return 1
+    return 0
 
 
-def _target_filename(path: Path, timestamp: float, index: int = 0) -> str:
-    stem = _target_stem(path, timestamp)
+def _live_pair_stem(path: Path) -> str:
+    stem = path.stem
+    if path.suffix.lower() not in VIDEO_RENAME_SUFFIXES:
+        return stem
+    stem_key = stem.casefold()
+    for suffix in LIVE_VIDEO_STEM_SUFFIXES:
+        if stem_key.endswith(suffix.casefold()):
+            return stem[: -len(suffix)] or stem
+    return stem
+
+
+def _rel_stem_match_path(path: Path, source_root: Path | None) -> Path:
+    rel_path = _relative_path(path, source_root)
+    return rel_path.with_name(_live_pair_stem(path)).with_suffix("")
+
+
+def _normalize_prefix(value: str, default: str) -> str:
+    text = "".join("_" if char.isspace() else char for char in value.strip())
+    text = "".join(char for char in text if char not in INVALID_FILENAME_CHARS and ord(char) >= 32)
+    text = text.strip("._ ")
+    return text or default
+
+
+def _target_prefix_for(path: Path, prefixes: PrefixConfig | None = None) -> str:
+    active = prefixes or PrefixConfig()
+    return active.video if path.suffix.lower() in VIDEO_RENAME_SUFFIXES else active.photo
+
+
+def _target_stem(path: Path, timestamp: float, prefixes: PrefixConfig | None = None) -> str:
+    timestamp_text = datetime.fromtimestamp(timestamp).strftime("%Y%m%d_%H%M%S")
+    return f"{_target_prefix_for(path, prefixes)}_{timestamp_text}"
+
+
+def _target_filename(path: Path, timestamp: float, index: int = 0, prefixes: PrefixConfig | None = None) -> str:
+    stem = _target_stem(path, timestamp, prefixes)
     if index:
         stem = f"{stem}_{index:03d}"
     return f"{stem}{path.suffix.lower()}"
 
 
-def _is_generated_target_name(path: Path, timestamp: float) -> bool:
-    expected_stem = _target_stem(path, timestamp)
+def _is_generated_target_name(path: Path, timestamp: float, prefixes: PrefixConfig | None = None) -> bool:
+    expected_stem = _target_stem(path, timestamp, prefixes)
     stem = path.stem
     if stem == expected_stem:
         return True
@@ -374,18 +441,18 @@ def detect_rename_timestamp(path: Path) -> tuple[float | None, str]:
     return None, "source_unknown"
 
 
-def _iter_rename_paths(paths: list[Path], recursive: bool) -> list[tuple[Path, Path | None]]:
-    files: list[tuple[Path, Path | None]] = []
+def _iter_rename_paths(paths: list[Path], recursive: bool) -> Iterator[tuple[Path, Path | None]]:
     for path in paths:
         if path.is_file():
             if _is_supported_rename_file(path):
-                files.append((path, path.parent))
+                yield path, path.parent
             continue
         if not path.is_dir():
             continue
         iterator = path.rglob("*") if recursive else path.glob("*")
-        files.extend((candidate, path) for candidate in iterator if _is_supported_rename_file(candidate))
-    return files
+        for candidate in iterator:
+            if _is_supported_rename_file(candidate):
+                yield candidate, path
 
 
 def _make_reference_item(file_path: Path, source_root: Path | None) -> ReferenceItem:
@@ -411,13 +478,10 @@ def _make_target_item(file_path: Path, source_root: Path | None) -> RenameItem:
 
 
 def _add_unique(mapping: dict[str, ReferenceItem], duplicates: set[str], key: str, item: ReferenceItem) -> None:
-    if key in duplicates:
+    existing = mapping.get(key)
+    if existing is None or _reference_match_priority(item) > _reference_match_priority(existing):
+        mapping[key] = item
         return
-    if key in mapping:
-        duplicates.add(key)
-        mapping.pop(key, None)
-        return
-    mapping[key] = item
 
 
 def _build_reference_index(items: list[ReferenceItem]) -> ReferenceIndex:
@@ -445,14 +509,14 @@ def _find_reference_match(item: RenameItem, index: ReferenceIndex) -> ReferenceI
     return index.stem.get(_stem_key(item.path))
 
 
-def _unique_target_path(item: RenameItem, reserved: set[Path]) -> Path | None:
+def _unique_target_path(item: RenameItem, reserved: set[Path], prefixes: PrefixConfig | None = None) -> Path | None:
     if item.timestamp is None:
         return None
-    if _is_generated_target_name(item.path, item.timestamp):
+    if _is_generated_target_name(item.path, item.timestamp, prefixes):
         return item.path
 
     for index in range(10000):
-        candidate = item.path.with_name(_target_filename(item.path, item.timestamp, index))
+        candidate = item.path.with_name(_target_filename(item.path, item.timestamp, index, prefixes))
         resolved = _safe_resolve(candidate)
         if resolved in reserved:
             continue
@@ -462,10 +526,10 @@ def _unique_target_path(item: RenameItem, reserved: set[Path]) -> Path | None:
     raise RuntimeError("could not allocate a unique target filename")
 
 
-def _assign_target_paths(items: list[RenameItem]) -> None:
+def _assign_target_paths(items: list[RenameItem], prefixes: PrefixConfig | None = None) -> None:
     reserved: set[Path] = set()
     for item in items:
-        target_path = _unique_target_path(item, reserved)
+        target_path = _unique_target_path(item, reserved, prefixes)
         item.target_path = target_path
         item.target_name = target_path.name if target_path is not None else ""
         if target_path is not None:
@@ -483,18 +547,16 @@ class ReferenceScanWorker(QObject):
 
     def run(self):
         seen: set[Path] = set()
-        items: list[ReferenceItem] = []
+        count = 0
         for file_path, source_root in _iter_rename_paths(self.paths, self.recursive):
             resolved = _safe_resolve(file_path)
             if resolved in seen:
                 continue
             seen.add(resolved)
-            items.append(_make_reference_item(file_path, source_root))
+            self.row_ready.emit(_make_reference_item(file_path, source_root))
+            count += 1
 
-        for item in sorted(items, key=lambda value: str(value.rel_path)):
-            self.row_ready.emit(item)
-
-        self.finished.emit(len(items))
+        self.finished.emit(count)
 
 
 class TargetScanWorker(QObject):
@@ -508,18 +570,64 @@ class TargetScanWorker(QObject):
 
     def run(self):
         seen: set[Path] = set()
-        items: list[RenameItem] = []
+        count = 0
         for file_path, source_root in _iter_rename_paths(self.paths, self.recursive):
             resolved = _safe_resolve(file_path)
             if resolved in seen:
                 continue
             seen.add(resolved)
-            items.append(_make_target_item(file_path, source_root))
+            self.row_ready.emit(_make_target_item(file_path, source_root))
+            count += 1
 
-        for item in sorted(items, key=lambda value: str(value.rel_path)):
-            self.row_ready.emit(item)
+        self.finished.emit(count)
 
-        self.finished.emit(len(items))
+
+class ReferenceDropScanWorker(QObject):
+    row_ready = pyqtSignal(object)
+    finished = pyqtSignal(int)
+
+    def __init__(self, paths: list[Path], recursive: bool, existing: set[Path]):
+        super().__init__()
+        self.paths = paths
+        self.recursive = recursive
+        self.existing = existing
+
+    def run(self):
+        seen: set[Path] = set(self.existing)
+        count = 0
+        for file_path, source_root in _iter_rename_paths(self.paths, self.recursive):
+            resolved = _safe_resolve(file_path)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            self.row_ready.emit(_make_reference_item(file_path, source_root))
+            count += 1
+
+        self.finished.emit(count)
+
+
+class TargetDropScanWorker(QObject):
+    row_ready = pyqtSignal(object)
+    finished = pyqtSignal(int)
+
+    def __init__(self, paths: list[Path], recursive: bool, existing: set[Path]):
+        super().__init__()
+        self.paths = paths
+        self.recursive = recursive
+        self.existing = existing
+
+    def run(self):
+        seen: set[Path] = set(self.existing)
+        count = 0
+        for file_path, source_root in _iter_rename_paths(self.paths, self.recursive):
+            resolved = _safe_resolve(file_path)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            self.row_ready.emit(_make_target_item(file_path, source_root))
+            count += 1
+
+        self.finished.emit(count)
 
 
 class ProcessWorker(QObject):
@@ -527,17 +635,18 @@ class ProcessWorker(QObject):
     progress_update = pyqtSignal(int, str)
     finished = pyqtSignal(dict)
 
-    def __init__(self, items: list[RenameItem], write_timestamps: bool = False):
+    def __init__(self, items: list[RenameItem], write_timestamps: bool = False, prefixes: PrefixConfig | None = None):
         super().__init__()
         self.items = items
         self.write_timestamps = write_timestamps
+        self.prefixes = prefixes or PrefixConfig()
 
     def run(self):
         success = 0
         failed = 0
         skipped = 0
         total = len(self.items)
-        _assign_target_paths(self.items)
+        _assign_target_paths(self.items, self.prefixes)
 
         for index, item in enumerate(self.items):
             row_index = item.row_index if item.row_index >= 0 else index
@@ -548,7 +657,8 @@ class ProcessWorker(QObject):
                 skipped += 1
                 status = item.status if item.status == "status_no_reference_match" else "status_skipped"
                 self.row_update.emit(row_index, status, None)
-                self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
+                if _should_emit_progress(index, total):
+                    self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                 continue
 
             if _is_same_path(item.path, target_path):
@@ -562,10 +672,10 @@ class ProcessWorker(QObject):
                 except Exception as exc:
                     failed += 1
                     self.row_update.emit(row_index, f"status_failed|{str(exc)[:36]}", target_path)
-                self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
+                if _should_emit_progress(index, total):
+                    self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                 continue
 
-            self.row_update.emit(row_index, "status_renaming", target_path)
             try:
                 item.path.rename(target_path)
                 if self.write_timestamps:
@@ -580,7 +690,8 @@ class ProcessWorker(QObject):
                 failed += 1
                 self.row_update.emit(row_index, f"status_failed|{str(exc)[:36]}", target_path)
 
-            self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
+            if _should_emit_progress(index, total):
+                self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
 
         self.finished.emit({"success": success, "failed": failed, "skipped": skipped})
 
@@ -605,6 +716,10 @@ class MainWindow(FramelessMainWindow):
         self._reference_scan_worker: ReferenceScanWorker | None = None
         self._target_scan_thread: QThread | None = None
         self._target_scan_worker: TargetScanWorker | None = None
+        self._reference_drop_thread: QThread | None = None
+        self._reference_drop_worker: ReferenceDropScanWorker | None = None
+        self._target_drop_thread: QThread | None = None
+        self._target_drop_worker: TargetDropScanWorker | None = None
         self._process_thread: QThread | None = None
         self._process_worker: ProcessWorker | None = None
         self._settings_path = _get_settings_path()
@@ -648,42 +763,51 @@ class MainWindow(FramelessMainWindow):
         if not self._embedded:
             header_layout.addLayout(language_row)
 
-        path_card = CardWidget(self)
-        path_layout = QVBoxLayout(path_card)
+        self.path_card = QWidget(self)
+        self.path_card.hide()
+        path_layout = QVBoxLayout(self.path_card)
         path_layout.setContentsMargins(16, 14, 16, 14)
         path_layout.setSpacing(10)
 
-        reference_row = QHBoxLayout()
+        self.reference_path_row = QWidget(self)
+        reference_row = QHBoxLayout(self.reference_path_row)
+        reference_row.setContentsMargins(0, 0, 0, 0)
         reference_row.setSpacing(10)
         self.reference_label = BodyLabel(self.tr("reference_dir"), self)
         self.reference_edit = LineEdit(self)
         self.reference_edit.setReadOnly(False)
         self.reference_edit.setPlaceholderText(self.tr("reference_placeholder"))
+        self.reference_edit.hide()
         self.btn_reference = PushButton(self.tr("choose_reference"), self)
         self.btn_reference.setIcon(_pick_icon("FOLDER", "FOLDER_ADD"))
         self.btn_reference.clicked.connect(self.browse_reference)
         reference_row.addWidget(self.reference_label)
-        reference_row.addWidget(self.reference_edit, 1)
+        reference_row.addStretch(1)
         reference_row.addWidget(self.btn_reference)
 
-        target_row = QHBoxLayout()
+        self.target_path_row = QWidget(self)
+        target_row = QHBoxLayout(self.target_path_row)
+        target_row.setContentsMargins(0, 0, 0, 0)
         target_row.setSpacing(10)
         self.target_label = BodyLabel(self.tr("target_dir"), self)
         self.target_edit = LineEdit(self)
         self.target_edit.setReadOnly(False)
         self.target_edit.setPlaceholderText(self.tr("target_placeholder"))
+        self.target_edit.hide()
         self.btn_target = PushButton(self.tr("choose_target"), self)
         self.btn_target.setIcon(_pick_icon("FOLDER", "FOLDER_ADD"))
         self.btn_target.clicked.connect(self.browse_target)
+        self.btn_target.hide()
         target_row.addWidget(self.target_label)
-        target_row.addWidget(self.target_edit, 1)
+        target_row.addStretch(1)
         target_row.addWidget(self.btn_target)
 
-        path_layout.addLayout(reference_row)
-        path_layout.addLayout(target_row)
+        path_layout.addWidget(self.reference_path_row)
+        path_layout.addWidget(self.target_path_row)
 
-        option_card = CardWidget(self)
-        option_layout = QVBoxLayout(option_card)
+        self.option_card = QWidget(self)
+        self.option_card.hide()
+        option_layout = QVBoxLayout(self.option_card)
         option_layout.setContentsMargins(16, 14, 16, 14)
         option_layout.setSpacing(10)
         option_row = QHBoxLayout()
@@ -702,6 +826,12 @@ class MainWindow(FramelessMainWindow):
         option_row.addStretch(1)
         option_layout.addLayout(option_row)
 
+        self.quick_option_widget = QWidget(self)
+        quick_option_layout = QVBoxLayout(self.quick_option_widget)
+        quick_option_layout.setContentsMargins(0, 0, 0, 0)
+        quick_option_layout.setSpacing(8)
+        prefix_row = QHBoxLayout()
+        prefix_row.setSpacing(8)
         quick_option_row = QHBoxLayout()
         quick_option_row.setSpacing(12)
         self.quick_require_reference_match_check = CheckBox(self.tr("require_reference_match"), self)
@@ -710,20 +840,39 @@ class MainWindow(FramelessMainWindow):
         self.quick_write_timestamps_check = CheckBox(self.tr("write_timestamps"), self)
         self.quick_write_timestamps_check.setChecked(self.write_timestamps_check.isChecked())
         self.quick_write_timestamps_check.toggled.connect(self._on_quick_write_timestamps_changed)
-        quick_option_row.addStretch(1)
+        self.photo_prefix_label = BodyLabel(self.tr("photo_prefix"), self)
+        self.photo_prefix_edit = LineEdit(self)
+        self.photo_prefix_edit.setText(DEFAULT_PHOTO_PREFIX)
+        self.photo_prefix_edit.setFixedWidth(96)
+        self.video_prefix_label = BodyLabel(self.tr("video_prefix"), self)
+        self.video_prefix_edit = LineEdit(self)
+        self.video_prefix_edit.setText(DEFAULT_VIDEO_PREFIX)
+        self.video_prefix_edit.setFixedWidth(96)
+        self.btn_photo_prefix_menu = PushButton(self.tr("prefix_presets"), self)
+        self.btn_photo_prefix_menu.setFixedWidth(68)
+        self.btn_photo_prefix_menu.clicked.connect(self._show_photo_prefix_menu)
+        self.btn_video_prefix_menu = PushButton(self.tr("prefix_presets"), self)
+        self.btn_video_prefix_menu.setFixedWidth(68)
+        self.btn_video_prefix_menu.clicked.connect(self._show_video_prefix_menu)
+        self.photo_prefix_edit.editingFinished.connect(self._on_prefix_changed)
+        self.video_prefix_edit.editingFinished.connect(self._on_prefix_changed)
+        prefix_row.addStretch(1)
+        prefix_row.addWidget(self.photo_prefix_label)
+        prefix_row.addWidget(self.photo_prefix_edit)
+        prefix_row.addWidget(self.btn_photo_prefix_menu)
+        prefix_row.addWidget(self.video_prefix_label)
+        prefix_row.addWidget(self.video_prefix_edit)
+        prefix_row.addWidget(self.btn_video_prefix_menu)
         quick_option_row.addWidget(self.quick_require_reference_match_check)
         quick_option_row.addWidget(self.quick_write_timestamps_check)
-        if self._embedded:
-            path_layout.addLayout(quick_option_row)
-        else:
-            self.quick_require_reference_match_check.hide()
-            self.quick_write_timestamps_check.hide()
-
-        tables_layout = QHBoxLayout()
+        quick_option_row.addStretch(1)
+        quick_option_layout.addLayout(prefix_row)
+        quick_option_layout.addLayout(quick_option_row)
+        tables_layout = QVBoxLayout()
         tables_layout.setSpacing(12)
 
-        reference_card = CardWidget(self)
-        reference_layout = QVBoxLayout(reference_card)
+        self.reference_card = CardWidget(self)
+        reference_layout = QVBoxLayout(self.reference_card)
         reference_layout.setContentsMargins(10, 10, 10, 10)
         reference_layout.setSpacing(8)
         reference_hint_row = QHBoxLayout()
@@ -770,8 +919,8 @@ class MainWindow(FramelessMainWindow):
         target_layout.addLayout(target_hint_row)
         target_layout.addWidget(self.table)
 
-        tables_layout.addWidget(reference_card, 1)
-        tables_layout.addWidget(target_card, 1)
+        tables_layout.addWidget(target_card, 2)
+        tables_layout.addWidget(self.reference_card, 1)
 
         action_card = CardWidget(self)
         action_layout = QVBoxLayout(action_card)
@@ -794,6 +943,7 @@ class MainWindow(FramelessMainWindow):
         self.btn_start = PrimaryPushButton(self.tr("start_rename"), self)
         self.btn_start.setIcon(_pick_icon("EDIT", "TAG", "PLAY"))
         self.btn_start.clicked.connect(self.start_processing)
+        action_layout.addWidget(self.quick_option_widget)
         action_row.addWidget(self.btn_scan_reference)
         action_row.addWidget(self.btn_scan_target)
         action_row.addWidget(self.btn_scan)
@@ -818,9 +968,6 @@ class MainWindow(FramelessMainWindow):
         foot_layout.addWidget(self.status, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         outer.addWidget(header_card)
-        outer.addWidget(path_card)
-        if not self._embedded:
-            outer.addWidget(option_card)
         outer.addLayout(tables_layout, 1)
         outer.addWidget(action_card)
         outer.addWidget(foot_card)
@@ -828,6 +975,8 @@ class MainWindow(FramelessMainWindow):
         self._init_default_dirs()
         self._load_settings()
         self._apply_language()
+        self._update_reference_area_visibility()
+        self.target_path_row.hide()
         self._connect_settings_signals()
 
     def _configure_table(self, table: TableWidget):
@@ -901,13 +1050,76 @@ class MainWindow(FramelessMainWindow):
         self._last_status_kwargs = kwargs
         self.status.setText(self.tr(key, **kwargs))
 
+    def _sync_path_tooltips(self):
+        reference_dir = self.reference_edit.text().strip()
+        target_dir = self.target_edit.text().strip()
+        self.btn_reference.setToolTip(reference_dir or self.tr("reference_placeholder"))
+        self.btn_target.setToolTip(target_dir or self.tr("target_placeholder"))
+
+    def _prefix_config(self) -> PrefixConfig:
+        return PrefixConfig(
+            photo=_normalize_prefix(self.photo_prefix_edit.text(), DEFAULT_PHOTO_PREFIX),
+            video=_normalize_prefix(self.video_prefix_edit.text(), DEFAULT_VIDEO_PREFIX),
+        )
+
+    def _set_prefix_text(self, photo: str | None = None, video: str | None = None):
+        if photo is not None:
+            self.photo_prefix_edit.setText(_normalize_prefix(photo, DEFAULT_PHOTO_PREFIX))
+        if video is not None:
+            self.video_prefix_edit.setText(_normalize_prefix(video, DEFAULT_VIDEO_PREFIX))
+
+    def _show_prefix_menu(self, button: PushButton, presets: tuple[str, ...], setter):
+        menu = QMenu(self)
+        for prefix in presets:
+            action = menu.addAction(prefix)
+            action.triggered.connect(lambda _checked=False, value=prefix: setter(value))
+        button_pos = button.mapToGlobal(button.rect().bottomLeft())
+        menu.exec(button_pos)
+
+    def _show_photo_prefix_menu(self):
+        self._show_prefix_menu(self.btn_photo_prefix_menu, PHOTO_PREFIX_PRESETS, self._set_photo_prefix)
+
+    def _show_video_prefix_menu(self):
+        self._show_prefix_menu(self.btn_video_prefix_menu, VIDEO_PREFIX_PRESETS, self._set_video_prefix)
+
+    def _set_photo_prefix(self, value: str):
+        self._set_prefix_text(photo=value)
+        self._on_prefix_changed()
+
+    def _set_video_prefix(self, value: str):
+        self._set_prefix_text(video=value)
+        self._on_prefix_changed()
+
+    def _on_prefix_changed(self):
+        prefixes = self._prefix_config()
+        self._set_prefix_text(prefixes.photo, prefixes.video)
+        self._refresh_target_matches()
+        self._save_settings()
+
+    def _thread_is_running(self, thread: QThread | None) -> bool:
+        try:
+            return thread is not None and thread.isRunning()
+        except RuntimeError:
+            return False
+
+    def _is_busy(self) -> bool:
+        return (
+            self.is_processing
+            or self._thread_is_running(self._reference_scan_thread)
+            or self._thread_is_running(self._target_scan_thread)
+            or self._thread_is_running(self._reference_drop_thread)
+            or self._thread_is_running(self._target_drop_thread)
+        )
+
     def _init_default_dirs(self):
         pics_dir = _get_windows_pictures_dir() or (Path.home() / "Pictures")
         self.reference_edit.clear()
         self.target_edit.setText(str(pics_dir))
+        self._sync_path_tooltips()
         self._set_status_text("waiting_source")
 
     def _settings_payload(self) -> dict:
+        prefixes = self._prefix_config()
         return {
             "language": self.lang,
             "reference_dir": self.reference_edit.text().strip(),
@@ -915,6 +1127,8 @@ class MainWindow(FramelessMainWindow):
             "include_subdirs": self.include_subdirs_check.isChecked(),
             "require_reference_match": self.require_reference_match_check.isChecked(),
             "write_timestamps": self.write_timestamps_check.isChecked(),
+            "photo_prefix": prefixes.photo,
+            "video_prefix": prefixes.video,
         }
 
     def _save_settings(self):
@@ -964,7 +1178,12 @@ class MainWindow(FramelessMainWindow):
             self.include_subdirs_check.setChecked(bool(data.get("include_subdirs", True)))
             self.require_reference_match_check.setChecked(bool(data.get("require_reference_match", True)))
             self.write_timestamps_check.setChecked(bool(data.get("write_timestamps", False)))
+            self._set_prefix_text(
+                photo=str(data.get("photo_prefix", DEFAULT_PHOTO_PREFIX)),
+                video=str(data.get("video_prefix", DEFAULT_VIDEO_PREFIX)),
+            )
             self._sync_quick_options()
+            self._sync_path_tooltips()
         finally:
             self._suspend_settings_save = False
 
@@ -1004,8 +1223,15 @@ class MainWindow(FramelessMainWindow):
         self._sync_quick_options()
         self._save_settings()
 
+    def _update_reference_area_visibility(self):
+        show_reference_area = self.require_reference_match_check.isChecked()
+        self.reference_path_row.setVisible(show_reference_area)
+        self.reference_card.setVisible(show_reference_area)
+        self.btn_scan_reference.setVisible(show_reference_area)
+
     def _on_match_option_changed(self, _checked: bool):
         self._sync_quick_options()
+        self._update_reference_area_visibility()
         self._refresh_target_matches()
         self._save_settings()
 
@@ -1021,11 +1247,18 @@ class MainWindow(FramelessMainWindow):
         self.target_edit.setPlaceholderText(self.tr("target_placeholder"))
         self.btn_reference.setText(self.tr("choose_reference"))
         self.btn_target.setText(self.tr("choose_target"))
+        self._sync_path_tooltips()
         self.include_subdirs_check.setText(self.tr("scan_subdirs"))
         self.require_reference_match_check.setText(self.tr("require_reference_match"))
         self.write_timestamps_check.setText(self.tr("write_timestamps"))
         self.quick_require_reference_match_check.setText(self.tr("require_reference_match"))
         self.quick_write_timestamps_check.setText(self.tr("write_timestamps"))
+        self.photo_prefix_label.setText(self.tr("photo_prefix"))
+        self.video_prefix_label.setText(self.tr("video_prefix"))
+        self.btn_photo_prefix_menu.setText(self.tr("prefix_presets"))
+        self.btn_video_prefix_menu.setText(self.tr("prefix_presets"))
+        self.btn_photo_prefix_menu.setToolTip(self.tr("prefix_presets"))
+        self.btn_video_prefix_menu.setToolTip(self.tr("prefix_presets"))
         self.reference_drop_hint.setText(self.tr("reference_drop_hint"))
         self.target_drop_hint.setText(self.tr("target_drop_hint"))
         self.reference_table.setHorizontalHeaderLabels(self._reference_headers())
@@ -1098,6 +1331,7 @@ class MainWindow(FramelessMainWindow):
         if not folder:
             return
         self.reference_edit.setText(folder)
+        self._sync_path_tooltips()
         self._save_settings()
         self.scan_reference_files()
 
@@ -1106,11 +1340,12 @@ class MainWindow(FramelessMainWindow):
         if not folder:
             return
         self.target_edit.setText(folder)
+        self._sync_path_tooltips()
         self._save_settings()
         self.scan_target_files()
 
     def clear_list(self):
-        if self.is_processing:
+        if self._is_busy():
             return
         self.reference_list.clear()
         self.file_list.clear()
@@ -1120,71 +1355,87 @@ class MainWindow(FramelessMainWindow):
         self._set_status_text("list_cleared")
 
     def add_reference_paths(self, paths: list[Path]):
-        if self.is_processing:
+        if self._is_busy():
             return
         first_dir = self._first_source_dir(paths)
         if first_dir is not None:
             self.reference_edit.setText(str(first_dir))
+            self._sync_path_tooltips()
             self._save_settings()
 
         existing = {_safe_resolve(item.path) for item in self.reference_list}
-        new_items: list[ReferenceItem] = []
-        for file_path, source_root in _iter_rename_paths(paths, self.include_subdirs_check.isChecked()):
-            resolved = _safe_resolve(file_path)
-            if resolved in existing:
-                continue
-            new_items.append(_make_reference_item(file_path, source_root))
-            existing.add(resolved)
+        self.progress.setValue(0)
+        self._set_status_text("scanning_reference")
 
-        if new_items:
-            new_items.sort(key=lambda value: str(value.rel_path))
-            self.reference_list.extend(new_items)
-            self._rebuild_reference_table()
-            self._refresh_target_matches()
-            self.progress.setValue(0)
-            self._set_status_text("reference_drop_added", added=len(new_items), count=len(self.reference_list))
-        else:
-            self._set_status_text("drop_no_new")
+        self._reference_drop_thread = QThread(self)
+        self._reference_drop_worker = ReferenceDropScanWorker(
+            paths,
+            self.include_subdirs_check.isChecked(),
+            existing,
+        )
+        self._reference_drop_worker.moveToThread(self._reference_drop_thread)
+        self._reference_drop_thread.started.connect(self._reference_drop_worker.run)
+        self._reference_drop_worker.row_ready.connect(self._append_reference_row)
+        self._reference_drop_worker.finished.connect(self._reference_drop_finished)
+        self._reference_drop_worker.finished.connect(self._reference_drop_thread.quit)
+        self._reference_drop_worker.finished.connect(self._reference_drop_worker.deleteLater)
+        self._reference_drop_thread.finished.connect(self._reference_drop_thread.deleteLater)
+        self._reference_drop_thread.finished.connect(self._reference_drop_thread_finished)
+        self._reference_drop_thread.start()
 
     def add_target_paths(self, paths: list[Path]):
-        if self.is_processing:
+        if self._is_busy():
             return
         first_dir = self._first_source_dir(paths)
         if first_dir is not None:
             self.target_edit.setText(str(first_dir))
+            self._sync_path_tooltips()
             self._save_settings()
 
         existing = {_safe_resolve(item.path) for item in self.file_list}
-        new_items: list[RenameItem] = []
-        for file_path, source_root in _iter_rename_paths(paths, self.include_subdirs_check.isChecked()):
-            resolved = _safe_resolve(file_path)
-            if resolved in existing:
-                continue
-            new_items.append(_make_target_item(file_path, source_root))
-            existing.add(resolved)
+        self.progress.setValue(0)
+        self._set_status_text("scanning_target")
 
-        if new_items:
-            new_items.sort(key=lambda value: str(value.rel_path))
-            self.file_list.extend(new_items)
-            self._refresh_target_matches()
-            self.progress.setValue(0)
-            self._set_status_text("target_drop_added", added=len(new_items), count=len(self.file_list))
-        else:
-            self._set_status_text("drop_no_new")
+        self._target_drop_thread = QThread(self)
+        self._target_drop_worker = TargetDropScanWorker(
+            paths,
+            self.include_subdirs_check.isChecked(),
+            existing,
+        )
+        self._target_drop_worker.moveToThread(self._target_drop_thread)
+        self._target_drop_thread.started.connect(self._target_drop_worker.run)
+        self._target_drop_worker.row_ready.connect(self._append_target_row)
+        self._target_drop_worker.finished.connect(self._target_drop_finished)
+        self._target_drop_worker.finished.connect(self._target_drop_thread.quit)
+        self._target_drop_worker.finished.connect(self._target_drop_worker.deleteLater)
+        self._target_drop_thread.finished.connect(self._target_drop_thread.deleteLater)
+        self._target_drop_thread.finished.connect(self._target_drop_thread_finished)
+        self._target_drop_thread.start()
 
     def scan_files(self):
-        if self.is_processing:
+        if self._is_busy():
             return
         started = False
-        reference_dir_text = self.reference_edit.text().strip()
-        if reference_dir_text:
-            started = self.scan_reference_files(notify_invalid=False) or started
-        started = self.scan_target_files(notify_invalid=False) or started
+        if self.require_reference_match_check.isChecked():
+            reference_dir_text = self.reference_edit.text().strip()
+            if reference_dir_text:
+                reference_dir = Path(reference_dir_text)
+                if reference_dir.is_dir():
+                    self._start_reference_scan(reference_dir)
+                    started = True
+
+        target_dir_text = self.target_edit.text().strip()
+        if target_dir_text:
+            target_dir = Path(target_dir_text)
+            if target_dir.is_dir():
+                self._start_target_scan(target_dir)
+                started = True
+
         if not started:
             self._notify(self.tr("invalid_folder_title"), self.tr("invalid_target_content"), is_error=True)
 
     def scan_reference_files(self, notify_invalid: bool = True) -> bool:
-        if self.is_processing:
+        if self._is_busy():
             return False
         reference_dir_text = self.reference_edit.text().strip()
         if not reference_dir_text:
@@ -1197,6 +1448,27 @@ class MainWindow(FramelessMainWindow):
                 self._notify(self.tr("invalid_folder_title"), self.tr("invalid_reference_content"), is_error=True)
             return False
 
+        self._start_reference_scan(reference_dir)
+        return True
+
+    def scan_target_files(self, notify_invalid: bool = True) -> bool:
+        if self._is_busy():
+            return False
+        target_dir_text = self.target_edit.text().strip()
+        if not target_dir_text:
+            if notify_invalid:
+                self._notify(self.tr("invalid_folder_title"), self.tr("invalid_target_content"), is_error=True)
+            return False
+        target_dir = Path(target_dir_text)
+        if not target_dir.is_dir():
+            if notify_invalid:
+                self._notify(self.tr("invalid_folder_title"), self.tr("invalid_target_content"), is_error=True)
+            return False
+
+        self._start_target_scan(target_dir)
+        return True
+
+    def _start_reference_scan(self, reference_dir: Path):
         self.reference_list.clear()
         self.reference_table.setRowCount(0)
         self.progress.setValue(0)
@@ -1212,23 +1484,10 @@ class MainWindow(FramelessMainWindow):
         self._reference_scan_worker.finished.connect(self._reference_scan_thread.quit)
         self._reference_scan_worker.finished.connect(self._reference_scan_worker.deleteLater)
         self._reference_scan_thread.finished.connect(self._reference_scan_thread.deleteLater)
+        self._reference_scan_thread.finished.connect(self._reference_scan_thread_finished)
         self._reference_scan_thread.start()
-        return True
 
-    def scan_target_files(self, notify_invalid: bool = True) -> bool:
-        if self.is_processing:
-            return False
-        target_dir_text = self.target_edit.text().strip()
-        if not target_dir_text:
-            if notify_invalid:
-                self._notify(self.tr("invalid_folder_title"), self.tr("invalid_target_content"), is_error=True)
-            return False
-        target_dir = Path(target_dir_text)
-        if not target_dir.is_dir():
-            if notify_invalid:
-                self._notify(self.tr("invalid_folder_title"), self.tr("invalid_target_content"), is_error=True)
-            return False
-
+    def _start_target_scan(self, target_dir: Path):
         self.file_list.clear()
         self.table.setRowCount(0)
         self.progress.setValue(0)
@@ -1244,8 +1503,8 @@ class MainWindow(FramelessMainWindow):
         self._target_scan_worker.finished.connect(self._target_scan_thread.quit)
         self._target_scan_worker.finished.connect(self._target_scan_worker.deleteLater)
         self._target_scan_thread.finished.connect(self._target_scan_thread.deleteLater)
+        self._target_scan_thread.finished.connect(self._target_scan_thread_finished)
         self._target_scan_thread.start()
-        return True
 
     def _append_reference_row(self, item: ReferenceItem):
         self.reference_list.append(item)
@@ -1285,6 +1544,38 @@ class MainWindow(FramelessMainWindow):
         for item in self.file_list:
             self._append_target_table_row(item)
 
+    def _reference_drop_finished(self, added: int):
+        self._refresh_target_matches()
+        if added:
+            self.progress.setValue(0)
+            self._set_status_text("reference_drop_added", added=added, count=len(self.reference_list))
+        else:
+            self._set_status_text("drop_no_new")
+
+    def _target_drop_finished(self, added: int):
+        self._refresh_target_matches()
+        if added:
+            self.progress.setValue(0)
+            self._set_status_text("target_drop_added", added=added, count=len(self.file_list))
+        else:
+            self._set_status_text("drop_no_new")
+
+    def _reference_drop_thread_finished(self):
+        self._reference_drop_worker = None
+        self._reference_drop_thread = None
+
+    def _target_drop_thread_finished(self):
+        self._target_drop_worker = None
+        self._target_drop_thread = None
+
+    def _reference_scan_thread_finished(self):
+        self._reference_scan_worker = None
+        self._reference_scan_thread = None
+
+    def _target_scan_thread_finished(self):
+        self._target_scan_worker = None
+        self._target_scan_thread = None
+
     def _reference_scan_finished(self, count: int):
         self._refresh_target_matches()
         if count == 0:
@@ -1300,26 +1591,27 @@ class MainWindow(FramelessMainWindow):
         self._set_status_text("scan_target_done_status", count=count)
 
     def _refresh_target_matches(self):
-        index = _build_reference_index(self.reference_list)
         require_match = self.require_reference_match_check.isChecked()
+        prefixes = self._prefix_config()
+        index = _build_reference_index(self.reference_list) if require_match else ReferenceIndex({}, {}, {})
         for item in self.file_list:
             previous_status = item.status
             if (
                 previous_status in COMPLETED_STATUSES
                 and item.timestamp is not None
-                and _is_generated_target_name(item.path, item.timestamp)
+                and _is_generated_target_name(item.path, item.timestamp, prefixes)
             ):
                 item.status = previous_status
                 continue
 
-            matched = _find_reference_match(item, index)
+            matched = _find_reference_match(item, index) if require_match else None
             if matched is not None:
                 item.timestamp = matched.timestamp
                 item.source = "source_reference"
                 item.match_mode = "reference"
                 item.matched_reference = str(matched.rel_path)
             elif require_match:
-                if item.own_timestamp is not None and _is_generated_target_name(item.path, item.own_timestamp):
+                if item.own_timestamp is not None and _is_generated_target_name(item.path, item.own_timestamp, prefixes):
                     item.timestamp = item.own_timestamp
                     item.source = item.own_source
                     item.match_mode = "self"
@@ -1343,17 +1635,17 @@ class MainWindow(FramelessMainWindow):
 
             if item.timestamp is None:
                 item.status = "status_skipped"
-            elif previous_status in COMPLETED_STATUSES and _is_generated_target_name(item.path, item.timestamp):
+            elif previous_status in COMPLETED_STATUSES and _is_generated_target_name(item.path, item.timestamp, prefixes):
                 item.status = previous_status
-            elif _is_generated_target_name(item.path, item.timestamp):
+            elif _is_generated_target_name(item.path, item.timestamp, prefixes):
                 item.status = "status_already_named"
             else:
                 item.status = "status_pending"
-        _assign_target_paths(self.file_list)
+        _assign_target_paths(self.file_list, prefixes)
         self._rebuild_target_table()
 
     def start_processing(self):
-        if self.is_processing:
+        if self._is_busy():
             return
         if not self.file_list:
             self._notify(self.tr("cannot_start_title"), self.tr("cannot_start_content"), is_error=True)
@@ -1391,6 +1683,7 @@ class MainWindow(FramelessMainWindow):
         self._process_worker = ProcessWorker(
             pending_items,
             write_timestamps=self.write_timestamps_check.isChecked(),
+            prefixes=self._prefix_config(),
         )
         self._process_worker.moveToThread(self._process_thread)
         self._process_thread.started.connect(self._process_worker.run)
@@ -1425,7 +1718,6 @@ class MainWindow(FramelessMainWindow):
                 self.table.setItem(row, 3, QTableWidgetItem(item.target_name or self.tr("target_unknown")))
 
         self.table.setItem(row, 4, QTableWidgetItem(self._display_status(status_text)))
-        self.table.scrollToItem(self.table.item(row, 4))
 
     def _update_progress(self, percent: int, text: str):
         self.progress.setValue(percent)
