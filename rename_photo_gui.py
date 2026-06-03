@@ -704,9 +704,10 @@ class ProcessWorker(QObject):
                     if self.write_timestamps:
                         apply_file_times_only(item.path, item.timestamp)
                         update_batch.append((row_index, "status_timestamped", target_path))
+                        success += 1
                     else:
                         update_batch.append((row_index, "status_already_named", target_path))
-                    skipped += 1
+                        skipped += 1
                 except Exception as exc:
                     failed += 1
                     update_batch.append((row_index, f"status_failed|{str(exc)[:36]}", target_path))
@@ -1840,6 +1841,10 @@ class MainWindow(FramelessMainWindow):
         pending_items: list[RenameItem] = []
         for row, item in enumerate(self.file_list):
             if item.status not in processable_statuses:
+                continue
+            if item.timestamp is None or item.target_path is None:
+                continue
+            if not self.write_timestamps_check.isChecked() and _is_same_path(item.path, item.target_path):
                 continue
             item_for_run = copy.copy(item)
             item_for_run.row_index = row
