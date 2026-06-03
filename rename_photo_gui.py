@@ -11,6 +11,8 @@ from pathlib import Path
 
 from qframelesswindow import FramelessMainWindow, StandardTitleBar
 
+from file_context_menu import install_file_context_menu
+
 from PyQt6.QtCore import QEvent, QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
@@ -891,6 +893,12 @@ class MainWindow(FramelessMainWindow):
         reference_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         reference_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.reference_table.viewport().installEventFilter(self)
+        self.reference_context_menu = install_file_context_menu(
+            self.reference_table,
+            self,
+            self._reference_context_file_paths,
+            lambda: self.lang,
+        )
         reference_layout.addLayout(reference_hint_row)
         reference_layout.addWidget(self.reference_table)
 
@@ -916,6 +924,12 @@ class MainWindow(FramelessMainWindow):
         target_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         target_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.table.viewport().installEventFilter(self)
+        self.target_context_menu = install_file_context_menu(
+            self.table,
+            self,
+            self._target_context_file_paths,
+            lambda: self.lang,
+        )
         target_layout.addLayout(target_hint_row)
         target_layout.addWidget(self.table)
 
@@ -989,6 +1003,20 @@ class MainWindow(FramelessMainWindow):
         table.setAcceptDrops(True)
         table.viewport().setAcceptDrops(True)
         table.verticalHeader().setDefaultSectionSize(36)
+
+    def _reference_context_file_paths(self, _row: int, selected_rows: list[int]) -> list[Path]:
+        return [
+            self.reference_list[row].path
+            for row in selected_rows
+            if 0 <= row < len(self.reference_list)
+        ]
+
+    def _target_context_file_paths(self, _row: int, selected_rows: list[int]) -> list[Path]:
+        return [
+            self.file_list[row].path
+            for row in selected_rows
+            if 0 <= row < len(self.file_list)
+        ]
 
     def _set_blue_title_bar(self):
         self.setTitleBar(StandardTitleBar(self))

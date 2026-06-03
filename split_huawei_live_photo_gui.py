@@ -11,6 +11,7 @@ from pathlib import Path
 
 from qframelesswindow import FramelessMainWindow, StandardTitleBar
 
+from file_context_menu import install_file_context_menu
 from split_huawei_live_photo import is_huawei_live_photo, split_live_photo
 from split_huawei_live_photo_translations import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, TRANSLATIONS
 
@@ -568,6 +569,7 @@ class MainWindow(FramelessMainWindow):
         self.table.setAcceptDrops(True)
         self.table.viewport().setAcceptDrops(True)
         self.table.viewport().installEventFilter(self)
+        self.table_context_menu = install_file_context_menu(self.table, self, self._context_file_paths, lambda: self.lang)
         self.table.setSortingEnabled(False)
 
         header = self.table.horizontalHeader()
@@ -776,6 +778,18 @@ class MainWindow(FramelessMainWindow):
                     event.acceptProposedAction()
                     return True
         return super().eventFilter(obj, event)
+
+    def _context_file_paths(self, _row: int, selected_rows: list[int]) -> list[Path]:
+        paths: list[Path] = []
+        for row in selected_rows:
+            if not (0 <= row < len(self.file_list)):
+                continue
+            task = self.file_list[row]
+            for key in ("img_path", "mp4_path"):
+                path = task.get(key)
+                if isinstance(path, Path) and path not in paths:
+                    paths.append(path)
+        return paths
 
     def _notify(self, title: str, content: str, is_error: bool = False):
         fn = InfoBar.error if is_error else InfoBar.success

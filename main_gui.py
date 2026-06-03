@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ui_translations import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, TRANSLATIONS
+from file_context_menu import install_file_context_menu
 from main_gui_logic import (
     ITEM_KIND_FIXED_LIVE,
     ITEM_KIND_MEIZU_STATIC,
@@ -598,6 +599,12 @@ class MainWindow(FramelessMainWindow):
         self.table.setAcceptDrops(True)
         self.table.viewport().setAcceptDrops(True)
         self.table.viewport().installEventFilter(self)
+        self.table_context_menu = install_file_context_menu(
+            self.table,
+            self,
+            self._context_file_paths_for_rows,
+            lambda: self.lang,
+        )
         self.table.setSortingEnabled(True)
         self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.table.viewport())
         self._rubber_band.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -1142,6 +1149,10 @@ class MainWindow(FramelessMainWindow):
         self.table.setCurrentCell(row, 1)
         return [item.jpg_path]
 
+    def _context_file_paths_for_rows(self, _row: int, selected_rows: list[int]) -> list[Path]:
+        items = [self._item_from_row(row) for row in selected_rows]
+        return [item.jpg_path for item in items if item is not None]
+
     def _set_row_status(self, item_id: str, status: str):
         for row in range(self.table.rowCount()):
             cb = self._cell_checkbox(row)
@@ -1390,9 +1401,6 @@ class MainWindow(FramelessMainWindow):
 
     def eventFilter(self, obj, event):
         if obj is self.table.viewport():
-            if event.type() == QEvent.Type.ContextMenu:
-                self._show_table_context_menu(event.pos())
-                return True
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self._rubber_band_press_pos = event.pos()
                 self._rubber_band_pending = True

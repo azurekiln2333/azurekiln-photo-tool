@@ -15,6 +15,8 @@ from pathlib import Path
 from PIL import ExifTags, Image
 from qframelesswindow import FramelessMainWindow, StandardTitleBar
 
+from file_context_menu import install_file_context_menu
+
 from PyQt6.QtCore import QEvent, QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
@@ -869,6 +871,7 @@ class MainWindow(FramelessMainWindow):
         self.table.setAcceptDrops(True)
         self.table.viewport().setAcceptDrops(True)
         self.table.viewport().installEventFilter(self)
+        self.table_context_menu = install_file_context_menu(self.table, self, self._context_file_paths, lambda: self.lang)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -1086,6 +1089,13 @@ class MainWindow(FramelessMainWindow):
                     event.acceptProposedAction()
                     return True
         return super().eventFilter(obj, event)
+
+    def _context_file_paths(self, _row: int, selected_rows: list[int]) -> list[Path]:
+        return [
+            self.file_list[row].path
+            for row in selected_rows
+            if 0 <= row < len(self.file_list)
+        ]
 
     def _notify(self, title: str, content: str, is_error: bool = False):
         fn = InfoBar.error if is_error else InfoBar.success
