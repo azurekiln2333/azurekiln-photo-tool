@@ -12,7 +12,7 @@ from pathlib import Path
 
 from qframelesswindow import FramelessMainWindow, StandardTitleBar
 
-from PyQt6.QtCore import QEvent, QObject, QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QAbstractTableModel, QEvent, QModelIndex, QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QMessageBox,
-    QTableWidgetItem,
+    QTableView,
     QVBoxLayout,
     QWidget,
 )
@@ -49,7 +49,6 @@ from timestamp_fix_gui import (
     ProgressBar,
     PushButton,
     SubtitleLabel,
-    TableWidget,
     Theme,
     VIDEO_SUFFIXES,
     _get_windows_pictures_dir,
@@ -63,7 +62,8 @@ APP_NAME = "DedupeMediaGUI"
 SUPPORTED_SUFFIXES = IMAGE_SUFFIXES + VIDEO_SUFFIXES
 HASH_CHUNK_SIZE = 1024 * 1024
 ROW_BATCH_SIZE = 100
-UI_DRAIN_ROWS = 40
+UI_APPEND_DRAIN_ROWS = 1000
+UI_UPDATE_DRAIN_ROWS = 200
 HASH_THREAD_OPTIONS = (1, 2, 4, 8, 16)
 COPY_SUFFIX_RE = re.compile(r"\s*\((\d+)\)$")
 TRANSLATIONS = {
@@ -169,6 +169,7 @@ class DedupeItem:
     source_root: Path | None
     rel_path: Path
     size: int
+    abs_path: str = ""
     digest: str = ""
     group_id: int = 0
     duplicate: bool = False
@@ -282,6 +283,89 @@ def _emit_batch(signal, batch: list[DedupeItem]):
         batch.clear()
 
 
+class DedupeTableModel(QAbstractTableModel):
+    def __init__(self, items: list[DedupeItem], display_status, headers: list[str], parent=None):
+        super().__init__(parent)
+        self.items = items
+        self.display_status = display_status
+        self.headers = headers
+        self.duplicate_bg = QBrush(QColor("#FEF3F2"))
+        self.duplicate_fg = QBrush(QColor("#B42318"))
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self.items)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else 6
+
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.DisplayRole and orientation == Qt.Orientation.Horizontal:
+            if 0 <= section < len(self.headers):
+                return self.headers[section]
+        return None
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or not (0 <= index.row() < len(self.items)):
+            return None
+        item = self.items[index.row()]
+        if role == Qt.ItemDataRole.DisplayRole:
+            return self._display_value(item, index.column())
+        if role == Qt.ItemDataRole.BackgroundRole and item.duplicate:
+            return self.duplicate_bg
+        if role == Qt.ItemDataRole.ForegroundRole and item.duplicate:
+            return self.duplicate_fg
+        return None
+
+    def _display_value(self, item: DedupeItem, column: int) -> str:
+        if column == 0:
+            return str(item.rel_path)
+        if column == 1:
+            return item.abs_path or str(_safe_resolve(item.path))
+        if column == 2:
+            return _format_size(item.size)
+        if column == 3:
+            return item.digest[:16] if item.digest else "-"
+        if column == 4:
+            return str(item.group_id) if item.group_id else "-"
+        if column == 5:
+            return self.display_status(item.status)
+        return ""
+
+    def set_headers(self, headers: list[str]):
+        self.headers = headers
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, self.columnCount() - 1)
+
+    def clear(self):
+        if not self.items:
+            return
+        self.beginRemoveRows(QModelIndex(), 0, len(self.items) - 1)
+        self.items.clear()
+        self.endRemoveRows()
+
+    def append_items(self, items: list[DedupeItem]):
+        if not items:
+            return
+        start = len(self.items)
+        self.beginInsertRows(QModelIndex(), start, start + len(items) - 1)
+        self.items.extend(items)
+        self.endInsertRows()
+
+    def update_row(self, row: int):
+        if not (0 <= row < len(self.items)):
+            return
+        left = self.index(row, 0)
+        right = self.index(row, self.columnCount() - 1)
+        self.dataChanged.emit(
+            left,
+            right,
+            [
+                Qt.ItemDataRole.DisplayRole,
+                Qt.ItemDataRole.BackgroundRole,
+                Qt.ItemDataRole.ForegroundRole,
+            ],
+        )
+
+
 class ScanWorker(QObject):
     row_batch_ready = pyqtSignal(object)
     row_batch_changed = pyqtSignal(object)
@@ -321,6 +405,7 @@ class ScanWorker(QObject):
                 path=file_path,
                 source_root=source_root,
                 rel_path=_relative_path(file_path, source_root),
+                abs_path=str(resolved),
                 size=size,
             )
             by_size.setdefault(size, []).append(item)
@@ -499,6 +584,7 @@ class MainWindow(FramelessMainWindow):
         self._drain_timer = QTimer(self)
         self._drain_timer.setInterval(10)
         self._drain_timer.timeout.connect(self._drain_table_queues)
+        self.table_model = DedupeTableModel(self.file_list, self._display_status, self._table_headers(), self)
         self.is_processing = False
         self._scan_thread: QThread | None = None
         self._scan_worker: ScanWorker | None = None
@@ -595,14 +681,13 @@ class MainWindow(FramelessMainWindow):
         hint_row.addWidget(self.drop_hint)
         hint_row.addStretch(1)
 
-        self.table = TableWidget(self)
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(self._table_headers())
+        self.table = QTableView(self)
+        self.table.setModel(self.table_model)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(self.table.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
         self.table.setFrameShape(QFrame.Shape.NoFrame)
         self.table.setAcceptDrops(True)
         self.table.viewport().setAcceptDrops(True)
@@ -793,15 +878,11 @@ class MainWindow(FramelessMainWindow):
         self.permanent_delete_check.setText(self.tr("permanent_delete"))
         self.hash_thread_label.setText(self.tr("hash_threads"))
         self.drop_hint.setText(self.tr("drop_hint"))
-        self.table.setHorizontalHeaderLabels(self._table_headers())
+        self.table_model.set_headers(self._table_headers())
         self.btn_scan.setText(self.tr("rescan"))
         self.btn_clear.setText(self.tr("clear_list"))
         self.btn_start.setText(self.tr("start_dedupe"))
         self._set_status_text(self._last_status_key, **self._last_status_kwargs)
-        for row, item in enumerate(self.file_list):
-            status_item = self.table.item(row, 5)
-            if status_item is not None:
-                status_item.setText(self._display_status(item.status))
 
     def _notify(self, title: str, content: str, is_error: bool = False):
         fn = InfoBar.error if is_error else InfoBar.success
@@ -825,7 +906,7 @@ class MainWindow(FramelessMainWindow):
     def clear_list(self):
         if self._is_busy():
             return
-        self.file_list.clear()
+        self.table_model.clear()
         self._row_by_scan_id.clear()
         self._pending_row_updates.clear()
         self._append_queue.clear()
@@ -834,7 +915,6 @@ class MainWindow(FramelessMainWindow):
         self._pending_scan_result = None
         self._pending_process_result = None
         self._drain_timer.stop()
-        self.table.setRowCount(0)
         self.progress.setValue(0)
         self._set_status_text("list_cleared")
 
@@ -868,7 +948,7 @@ class MainWindow(FramelessMainWindow):
         source_dir = Path(source_text)
         if not source_dir.is_dir():
             return
-        self.file_list.clear()
+        self.table_model.clear()
         self._row_by_scan_id.clear()
         self._pending_row_updates.clear()
         self._append_queue.clear()
@@ -877,7 +957,6 @@ class MainWindow(FramelessMainWindow):
         self._pending_scan_result = None
         self._pending_process_result = None
         self._drain_timer.stop()
-        self.table.setRowCount(0)
         self._start_scan([source_dir], existing=set())
 
     def add_dropped_paths(self, paths: list[Path]):
@@ -888,7 +967,7 @@ class MainWindow(FramelessMainWindow):
             self.input_edit.setText(str(first_dir))
         if self.file_list:
             paths = [item.path for item in self.file_list] + paths
-            self.file_list.clear()
+            self.table_model.clear()
             self._row_by_scan_id.clear()
             self._pending_row_updates.clear()
             self._append_queue.clear()
@@ -897,7 +976,6 @@ class MainWindow(FramelessMainWindow):
             self._pending_scan_result = None
             self._pending_process_result = None
             self._drain_timer.stop()
-            self.table.setRowCount(0)
         self._start_scan(paths, existing=set())
 
     def _start_scan(self, paths: list[Path], existing: set[Path]):
@@ -921,26 +999,6 @@ class MainWindow(FramelessMainWindow):
         self._scan_thread.finished.connect(self._scan_thread.deleteLater)
         self._scan_thread.finished.connect(self._scan_thread_finished)
         self._scan_thread.start()
-
-    def _row_values(self, item: DedupeItem) -> list[str]:
-        return [
-            str(item.rel_path),
-            str(_safe_resolve(item.path)),
-            _format_size(item.size),
-            item.digest[:16] if item.digest else "-",
-            str(item.group_id) if item.group_id else "-",
-            self._display_status(item.status),
-        ]
-
-    def _set_row_values(self, row: int, item: DedupeItem):
-        for column, value in enumerate(self._row_values(item)):
-            table_item = self.table.item(row, column)
-            if table_item is None:
-                table_item = QTableWidgetItem(value)
-                self.table.setItem(row, column, table_item)
-            else:
-                table_item.setText(value)
-        self._style_row(row, item.duplicate)
 
     def _append_row(self, item: DedupeItem):
         self._append_rows([item])
@@ -968,15 +1026,15 @@ class MainWindow(FramelessMainWindow):
         return items
 
     def _drain_table_queues(self):
-        appended = self._pop_queue_items(self._append_queue, UI_DRAIN_ROWS)
+        appended = self._pop_queue_items(self._append_queue, UI_APPEND_DRAIN_ROWS)
         if appended:
             self._append_rows(appended)
 
-        refreshed = self._pop_queue_items(self._refresh_queue, UI_DRAIN_ROWS)
+        refreshed = self._pop_queue_items(self._refresh_queue, UI_UPDATE_DRAIN_ROWS)
         if refreshed:
             self._refresh_rows(refreshed)
 
-        process_updates = self._pop_queue_items(self._process_update_queue, UI_DRAIN_ROWS)
+        process_updates = self._pop_queue_items(self._process_update_queue, UI_UPDATE_DRAIN_ROWS)
         if process_updates:
             self._apply_process_updates(process_updates)
 
@@ -996,21 +1054,16 @@ class MainWindow(FramelessMainWindow):
     def _append_rows(self, items: list[DedupeItem]):
         if not items:
             return
-        self.table.setUpdatesEnabled(False)
-        try:
-            start_row = self.table.rowCount()
-            self.table.setRowCount(start_row + len(items))
-            for offset, item in enumerate(items):
-                item.row_index = len(self.file_list)
-                self.file_list.append(item)
-                row = start_row + offset
-                self._row_by_scan_id[item.scan_id] = row
-                self._set_row_values(row, item)
-                pending_item = self._pending_row_updates.pop(item.scan_id, None)
-                if pending_item is not None:
-                    self._refresh_row(pending_item)
-        finally:
-            self.table.setUpdatesEnabled(True)
+        start_row = len(self.file_list)
+        for offset, item in enumerate(items):
+            row = start_row + offset
+            item.row_index = row
+            self._row_by_scan_id[item.scan_id] = row
+        self.table_model.append_items(items)
+        for item in items:
+            pending_item = self._pending_row_updates.pop(item.scan_id, None)
+            if pending_item is not None:
+                self._refresh_row(pending_item)
 
     def _refresh_rows(self, items: list[DedupeItem]):
         if not items:
@@ -1022,18 +1075,6 @@ class MainWindow(FramelessMainWindow):
         finally:
             self.table.setUpdatesEnabled(True)
 
-    def _style_row(self, row: int, duplicate: bool):
-        duplicate_bg = QBrush(QColor("#FEF3F2"))
-        duplicate_fg = QBrush(QColor("#B42318"))
-        normal_bg = QBrush()
-        normal_fg = QBrush()
-        for column in range(self.table.columnCount()):
-            table_item = self.table.item(row, column)
-            if table_item is None:
-                continue
-            table_item.setBackground(duplicate_bg if duplicate else normal_bg)
-            table_item.setForeground(duplicate_fg if duplicate else normal_fg)
-
     def _refresh_row(self, item: DedupeItem):
         row = self._row_by_scan_id.get(item.scan_id)
         if row is None:
@@ -1042,24 +1083,7 @@ class MainWindow(FramelessMainWindow):
         if 0 <= row < len(self.file_list):
             self.file_list[row] = item
             item.row_index = row
-        if not (0 <= row < self.table.rowCount()):
-            return
-        values = {
-            0: str(item.rel_path),
-            1: str(_safe_resolve(item.path)),
-            2: _format_size(item.size),
-            3: item.digest[:16] if item.digest else "-",
-            4: str(item.group_id) if item.group_id else "-",
-            5: self._display_status(item.status),
-        }
-        for column, value in values.items():
-            table_item = self.table.item(row, column)
-            if table_item is None:
-                table_item = QTableWidgetItem(value)
-                self.table.setItem(row, column, table_item)
-            else:
-                table_item.setText(value)
-        self._style_row(row, item.duplicate)
+            self.table_model.update_row(row)
 
     def _update_scan_progress(self, percent: int, _text: str):
         self.progress.setValue(percent)
@@ -1132,17 +1156,9 @@ class MainWindow(FramelessMainWindow):
             self.table.setUpdatesEnabled(True)
 
     def _update_row_status(self, row: int, status: str):
-        item = self.file_list[row] if 0 <= row < len(self.file_list) else None
         if 0 <= row < len(self.file_list):
             self.file_list[row].status = status
-        if 0 <= row < self.table.rowCount():
-            status_item = self.table.item(row, 5)
-            if status_item is None:
-                status_item = QTableWidgetItem()
-                self.table.setItem(row, 5, status_item)
-            status_item.setText(self._display_status(status))
-            if item is not None:
-                self._style_row(row, item.duplicate)
+            self.table_model.update_row(row)
 
     def _update_process_progress(self, percent: int, text: str):
         self.progress.setValue(percent)
