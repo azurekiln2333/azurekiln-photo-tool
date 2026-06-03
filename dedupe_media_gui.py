@@ -81,7 +81,7 @@ TRANSLATIONS = {
         "hash_threads": "Hash 线程",
         "drop_hint": "拖入图片、视频或文件夹；同大小文件才会计算完整 SHA-256，提高扫描速度。",
         "table_file": "文件",
-        "table_abs_path": "绝对路径",
+        "table_abs_path": "所在目录",
         "table_size": "大小",
         "table_hash": "SHA-256",
         "table_group": "组",
@@ -127,7 +127,7 @@ TRANSLATIONS = {
         "hash_threads": "Hash threads",
         "drop_hint": "Drop photos, videos, or folders. Full SHA-256 is calculated only for same-size files.",
         "table_file": "File",
-        "table_abs_path": "Absolute path",
+        "table_abs_path": "Folder",
         "table_size": "Size",
         "table_hash": "SHA-256",
         "table_group": "Group",
@@ -170,6 +170,7 @@ class DedupeItem:
     rel_path: Path
     size: int
     abs_path: str = ""
+    abs_dir: str = ""
     digest: str = ""
     group_id: int = 0
     duplicate: bool = False
@@ -310,6 +311,8 @@ class DedupeTableModel(QAbstractTableModel):
         item = self.items[index.row()]
         if role == Qt.ItemDataRole.DisplayRole:
             return self._display_value(item, index.column())
+        if role == Qt.ItemDataRole.ToolTipRole:
+            return item.abs_path or str(_safe_resolve(item.path))
         if role == Qt.ItemDataRole.BackgroundRole and item.duplicate:
             return self.duplicate_bg
         if role == Qt.ItemDataRole.ForegroundRole and item.duplicate:
@@ -320,7 +323,7 @@ class DedupeTableModel(QAbstractTableModel):
         if column == 0:
             return str(item.rel_path)
         if column == 1:
-            return item.abs_path or str(_safe_resolve(item.path))
+            return item.abs_dir or str(_safe_resolve(item.path).parent)
         if column == 2:
             return _format_size(item.size)
         if column == 3:
@@ -406,6 +409,7 @@ class ScanWorker(QObject):
                 source_root=source_root,
                 rel_path=_relative_path(file_path, source_root),
                 abs_path=str(resolved),
+                abs_dir=str(resolved.parent),
                 size=size,
             )
             by_size.setdefault(size, []).append(item)
@@ -688,6 +692,8 @@ class MainWindow(FramelessMainWindow):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.table.setWordWrap(False)
         self.table.setFrameShape(QFrame.Shape.NoFrame)
         self.table.setAcceptDrops(True)
         self.table.viewport().setAcceptDrops(True)
