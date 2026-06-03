@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import ctypes
 import json
 import os
 import sys
@@ -542,6 +543,18 @@ def _assign_target_paths(items: list[RenameItem], prefixes: PrefixConfig | None 
             reserved.add(_safe_resolve(target_path))
 
 
+def _rename_path(source: Path, target: Path):
+    if sys.platform == "win32":
+        move_file_ex = ctypes.windll.kernel32.MoveFileExW
+        move_file_ex.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        move_file_ex.restype = ctypes.c_bool
+        MOVEFILE_COPY_ALLOWED = 0x00000002
+        if not move_file_ex(str(source), str(target), MOVEFILE_COPY_ALLOWED):
+            raise ctypes.WinError()
+        return
+    source.rename(target)
+
+
 class ReferenceScanWorker(QObject):
     row_ready = pyqtSignal(object)
     finished = pyqtSignal(int)
@@ -682,6 +695,8 @@ class ProcessWorker(QObject):
                 if _should_emit_progress(index, total):
                     self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                     QThread.msleep(1)
+                elif index % 10 == 0:
+                    QThread.msleep(1)
                 continue
 
             if _is_same_path(item.path, target_path):
@@ -700,10 +715,12 @@ class ProcessWorker(QObject):
                 if _should_emit_progress(index, total):
                     self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
                     QThread.msleep(1)
+                elif index % 10 == 0:
+                    QThread.msleep(1)
                 continue
 
             try:
-                item.path.rename(target_path)
+                _rename_path(item.path, target_path)
                 if self.write_timestamps:
                     apply_file_times_only(target_path, item.timestamp)
                 item.path = target_path
@@ -720,6 +737,8 @@ class ProcessWorker(QObject):
                 self._emit_update_batch(update_batch)
             if _should_emit_progress(index, total):
                 self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
+                QThread.msleep(1)
+            elif index % 10 == 0:
                 QThread.msleep(1)
 
         self._emit_update_batch(update_batch)
