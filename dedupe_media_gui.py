@@ -5,13 +5,14 @@ import os
 import re
 import sys
 import json
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
 from qframelesswindow import FramelessMainWindow, StandardTitleBar
 
-from PyQt6.QtCore import QEvent, QObject, QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -62,6 +63,7 @@ APP_NAME = "DedupeMediaGUI"
 SUPPORTED_SUFFIXES = IMAGE_SUFFIXES + VIDEO_SUFFIXES
 HASH_CHUNK_SIZE = 1024 * 1024
 ROW_BATCH_SIZE = 100
+UI_DRAIN_ROWS = 40
 HASH_THREAD_OPTIONS = (1, 2, 4, 8, 16)
 COPY_SUFFIX_RE = re.compile(r"\s*\((\d+)\)$")
 TRANSLATIONS = {
@@ -389,7 +391,7 @@ class ScanWorker(QObject):
 
 
 class ProcessWorker(QObject):
-    row_update = pyqtSignal(int, str)
+    row_update_batch = pyqtSignal(object)
     progress_update = pyqtSignal(int, str)
     finished = pyqtSignal(dict)
 
@@ -398,7 +400,56 @@ class ProcessWorker(QObject):
         self.items = items
         self.permanent = permanent
 
+    def _emit_update_batch(self, updates: list[tuple[int, str]]):
+        if updates:
+            self.row_update_batch.emit(updates[:])
+            updates.clear()
+
     def run(self):
+        success = 0
+        failed = 0
+        total = len(self.items)
+        update_batch: list[tuple[int, str]] = []
+
+        if not self.permanent:
+            if not HAS_SEND2TRASH:
+                failed = total
+                for item in self.items:
+                    update_batch.append((item.row_index, "status_failed|send2trash"))
+                    if len(update_batch) >= ROW_BATCH_SIZE:
+                        self._emit_update_batch(update_batch)
+                self._emit_update_batch(update_batch)
+                self.progress_update.emit(100, f"{total}/{total}")
+                self.finished.emit({"success": success, "failed": failed})
+                return
+            try:
+                self.progress_update.emit(0, f"0/{total}")
+                send2trash([str(item.path) for item in self.items])
+                success = total
+                for item in self.items:
+                    update_batch.append((item.row_index, "status_recycled"))
+                    if len(update_batch) >= ROW_BATCH_SIZE:
+                        self._emit_update_batch(update_batch)
+                self._emit_update_batch(update_batch)
+                self.progress_update.emit(100, f"{total}/{total}")
+            except TypeError:
+                success, failed = self._run_per_item(update_batch)
+            except Exception as exc:
+                failed = total
+                error_status = f"status_failed|{str(exc)[:36]}"
+                for item in self.items:
+                    update_batch.append((item.row_index, error_status))
+                    if len(update_batch) >= ROW_BATCH_SIZE:
+                        self._emit_update_batch(update_batch)
+                self._emit_update_batch(update_batch)
+                self.progress_update.emit(100, f"{total}/{total}")
+            self.finished.emit({"success": success, "failed": failed})
+            return
+
+        success, failed = self._run_per_item(update_batch)
+        self.finished.emit({"success": success, "failed": failed})
+
+    def _run_per_item(self, update_batch: list[tuple[int, str]]) -> tuple[int, int]:
         success = 0
         failed = 0
         total = len(self.items)
@@ -412,13 +463,16 @@ class ProcessWorker(QObject):
                     send2trash(str(item.path))
                     status = "status_recycled"
                 success += 1
-                self.row_update.emit(item.row_index, status)
+                update_batch.append((item.row_index, status))
             except Exception as exc:
                 failed += 1
-                self.row_update.emit(item.row_index, f"status_failed|{str(exc)[:36]}")
+                update_batch.append((item.row_index, f"status_failed|{str(exc)[:36]}"))
+            if len(update_batch) >= ROW_BATCH_SIZE:
+                self._emit_update_batch(update_batch)
             if _should_emit_progress(index, total):
                 self.progress_update.emit(percent, f"{index + 1}/{total}")
-        self.finished.emit({"success": success, "failed": failed})
+        self._emit_update_batch(update_batch)
+        return success, failed
 
 
 class MainWindow(FramelessMainWindow):
@@ -437,6 +491,14 @@ class MainWindow(FramelessMainWindow):
         self.file_list: list[DedupeItem] = []
         self._row_by_scan_id: dict[int, int] = {}
         self._pending_row_updates: dict[int, DedupeItem] = {}
+        self._append_queue: deque[DedupeItem] = deque()
+        self._refresh_queue: deque[DedupeItem] = deque()
+        self._process_update_queue: deque[tuple[int, str]] = deque()
+        self._pending_scan_result: dict | None = None
+        self._pending_process_result: dict | None = None
+        self._drain_timer = QTimer(self)
+        self._drain_timer.setInterval(10)
+        self._drain_timer.timeout.connect(self._drain_table_queues)
         self.is_processing = False
         self._scan_thread: QThread | None = None
         self._scan_worker: ScanWorker | None = None
@@ -705,6 +767,10 @@ class MainWindow(FramelessMainWindow):
             self.is_processing
             or (self._scan_thread is not None and self._scan_thread.isRunning())
             or (self._process_thread is not None and self._process_thread.isRunning())
+            or self._drain_timer.isActive()
+            or bool(self._append_queue)
+            or bool(self._refresh_queue)
+            or bool(self._process_update_queue)
         )
 
     def _on_language_changed(self, _index: int):
@@ -762,6 +828,12 @@ class MainWindow(FramelessMainWindow):
         self.file_list.clear()
         self._row_by_scan_id.clear()
         self._pending_row_updates.clear()
+        self._append_queue.clear()
+        self._refresh_queue.clear()
+        self._process_update_queue.clear()
+        self._pending_scan_result = None
+        self._pending_process_result = None
+        self._drain_timer.stop()
         self.table.setRowCount(0)
         self.progress.setValue(0)
         self._set_status_text("list_cleared")
@@ -799,6 +871,12 @@ class MainWindow(FramelessMainWindow):
         self.file_list.clear()
         self._row_by_scan_id.clear()
         self._pending_row_updates.clear()
+        self._append_queue.clear()
+        self._refresh_queue.clear()
+        self._process_update_queue.clear()
+        self._pending_scan_result = None
+        self._pending_process_result = None
+        self._drain_timer.stop()
         self.table.setRowCount(0)
         self._start_scan([source_dir], existing=set())
 
@@ -813,6 +891,12 @@ class MainWindow(FramelessMainWindow):
             self.file_list.clear()
             self._row_by_scan_id.clear()
             self._pending_row_updates.clear()
+            self._append_queue.clear()
+            self._refresh_queue.clear()
+            self._process_update_queue.clear()
+            self._pending_scan_result = None
+            self._pending_process_result = None
+            self._drain_timer.stop()
             self.table.setRowCount(0)
         self._start_scan(paths, existing=set())
 
@@ -828,8 +912,8 @@ class MainWindow(FramelessMainWindow):
         )
         self._scan_worker.moveToThread(self._scan_thread)
         self._scan_thread.started.connect(self._scan_worker.run)
-        self._scan_worker.row_batch_ready.connect(self._append_rows)
-        self._scan_worker.row_batch_changed.connect(self._refresh_rows)
+        self._scan_worker.row_batch_ready.connect(self._queue_append_rows)
+        self._scan_worker.row_batch_changed.connect(self._queue_refresh_rows)
         self._scan_worker.progress_update.connect(self._update_scan_progress)
         self._scan_worker.finished.connect(self._scan_finished)
         self._scan_worker.finished.connect(self._scan_thread.quit)
@@ -860,6 +944,54 @@ class MainWindow(FramelessMainWindow):
 
     def _append_row(self, item: DedupeItem):
         self._append_rows([item])
+
+    def _queue_append_rows(self, items: list[DedupeItem]):
+        self._append_queue.extend(items)
+        self._ensure_drain_timer()
+
+    def _queue_refresh_rows(self, items: list[DedupeItem]):
+        self._refresh_queue.extend(items)
+        self._ensure_drain_timer()
+
+    def _queue_process_updates(self, updates: list[tuple[int, str]]):
+        self._process_update_queue.extend(updates)
+        self._ensure_drain_timer()
+
+    def _ensure_drain_timer(self):
+        if not self._drain_timer.isActive():
+            self._drain_timer.start()
+
+    def _pop_queue_items(self, queue: deque, limit: int) -> list:
+        items: list = []
+        while queue and len(items) < limit:
+            items.append(queue.popleft())
+        return items
+
+    def _drain_table_queues(self):
+        appended = self._pop_queue_items(self._append_queue, UI_DRAIN_ROWS)
+        if appended:
+            self._append_rows(appended)
+
+        refreshed = self._pop_queue_items(self._refresh_queue, UI_DRAIN_ROWS)
+        if refreshed:
+            self._refresh_rows(refreshed)
+
+        process_updates = self._pop_queue_items(self._process_update_queue, UI_DRAIN_ROWS)
+        if process_updates:
+            self._apply_process_updates(process_updates)
+
+        if self._append_queue or self._refresh_queue or self._process_update_queue:
+            return
+
+        self._drain_timer.stop()
+        if self._pending_scan_result is not None:
+            result = self._pending_scan_result
+            self._pending_scan_result = None
+            self._apply_scan_finished(result)
+        if self._pending_process_result is not None:
+            result = self._pending_process_result
+            self._pending_process_result = None
+            self._apply_processing_finished(result)
 
     def _append_rows(self, items: list[DedupeItem]):
         if not items:
@@ -933,6 +1065,10 @@ class MainWindow(FramelessMainWindow):
         self.progress.setValue(percent)
 
     def _scan_finished(self, result: dict):
+        self._pending_scan_result = result
+        self._ensure_drain_timer()
+
+    def _apply_scan_finished(self, result: dict):
         count = int(result.get("count", 0))
         duplicates = int(result.get("duplicates", 0))
         self.progress.setValue(100)
@@ -978,7 +1114,7 @@ class MainWindow(FramelessMainWindow):
         self._process_worker = ProcessWorker(duplicate_items, permanent=permanent)
         self._process_worker.moveToThread(self._process_thread)
         self._process_thread.started.connect(self._process_worker.run)
-        self._process_worker.row_update.connect(self._update_row_status)
+        self._process_worker.row_update_batch.connect(self._queue_process_updates)
         self._process_worker.progress_update.connect(self._update_process_progress)
         self._process_worker.finished.connect(self._processing_finished)
         self._process_worker.finished.connect(self._process_thread.quit)
@@ -987,22 +1123,36 @@ class MainWindow(FramelessMainWindow):
         self._process_thread.finished.connect(self._process_thread_finished)
         self._process_thread.start()
 
+    def _apply_process_updates(self, updates: list[tuple[int, str]]):
+        self.table.setUpdatesEnabled(False)
+        try:
+            for row, status in updates:
+                self._update_row_status(row, status)
+        finally:
+            self.table.setUpdatesEnabled(True)
+
     def _update_row_status(self, row: int, status: str):
         item = self.file_list[row] if 0 <= row < len(self.file_list) else None
         if 0 <= row < len(self.file_list):
             self.file_list[row].status = status
         if 0 <= row < self.table.rowCount():
-            status_item = QTableWidgetItem(self._display_status(status))
-            if item is not None and item.duplicate:
-                status_item.setBackground(QBrush(QColor("#FEF3F2")))
-                status_item.setForeground(QBrush(QColor("#B42318")))
-            self.table.setItem(row, 5, status_item)
+            status_item = self.table.item(row, 5)
+            if status_item is None:
+                status_item = QTableWidgetItem()
+                self.table.setItem(row, 5, status_item)
+            status_item.setText(self._display_status(status))
+            if item is not None:
+                self._style_row(row, item.duplicate)
 
     def _update_process_progress(self, percent: int, text: str):
         self.progress.setValue(percent)
         self.status.setText(f"{self.tr('status_processing')} {text}")
 
     def _processing_finished(self, result: dict):
+        self._pending_process_result = result
+        self._ensure_drain_timer()
+
+    def _apply_processing_finished(self, result: dict):
         self.is_processing = False
         self.btn_start.setEnabled(True)
         self.btn_scan.setEnabled(True)
