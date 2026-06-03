@@ -89,6 +89,7 @@ EXTRA_TRANSLATIONS = {
         "summary_trash": "汇总后将中间产物移入回收站",
         "table_file": "文件相对路径",
         "table_type": "类型",
+        "table_matched_video": "匹配到视频文件名",
         TASK_KIND_LIVE: "待合并 LivePhoto",
         TASK_KIND_STATIC: "静态照片",
         TASK_KIND_VIDEO: "未配对视频",
@@ -132,6 +133,7 @@ EXTRA_TRANSLATIONS = {
         "summary_trash": "Move intermediate artifacts to recycle bin after summary",
         "table_file": "Relative file path",
         "table_type": "Type",
+        "table_matched_video": "Matched video filename",
         TASK_KIND_LIVE: "LivePhoto to merge",
         TASK_KIND_STATIC: "Static photo",
         TASK_KIND_VIDEO: "Unpaired video",
@@ -1069,7 +1071,7 @@ class MainWindow(FramelessMainWindow):
         hint_row.addStretch(1)
 
         self.table = TableWidget(self)
-        self.table.setColumnCount(3)
+        self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(self._table_headers())
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
@@ -1087,6 +1089,7 @@ class MainWindow(FramelessMainWindow):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setDefaultSectionSize(36)
 
         table_layout.addLayout(hint_row)
@@ -1202,7 +1205,12 @@ class MainWindow(FramelessMainWindow):
         return text.format(**kwargs) if kwargs else text
 
     def _table_headers(self) -> list[str]:
-        return [self.tr("table_file"), self.tr("table_type"), self.tr("table_status")]
+        return [
+            self.tr("table_file"),
+            self.tr("table_type"),
+            self.tr("table_matched_video"),
+            self.tr("table_status"),
+        ]
 
     def _display_status(self, status: str) -> str:
         if status.startswith("status_static_failed|"):
@@ -1216,6 +1224,12 @@ class MainWindow(FramelessMainWindow):
 
     def _display_task_type(self, task: dict) -> str:
         return self.tr(task.get("kind", TASK_KIND_STATIC))
+
+    def _display_matched_video(self, task: dict) -> str:
+        video_path = task.get("mp4_path")
+        if isinstance(video_path, Path):
+            return video_path.name
+        return "-"
 
     def _display_progress_text(self, text: str) -> str:
         if text.startswith("progress|"):
@@ -1282,9 +1296,12 @@ class MainWindow(FramelessMainWindow):
     def _refresh_table_language(self):
         for row, task in enumerate(self.file_list):
             type_item = self.table.item(row, 1)
-            status_item = self.table.item(row, 2)
+            matched_video_item = self.table.item(row, 2)
+            status_item = self.table.item(row, 3)
             if type_item is not None:
                 type_item.setText(self._display_task_type(task))
+            if matched_video_item is not None:
+                matched_video_item.setText(self._display_matched_video(task))
             if status_item is not None:
                 status_item.setText(self._display_status(task["status"]))
 
@@ -1525,7 +1542,8 @@ class MainWindow(FramelessMainWindow):
         self.table.insertRow(row)
         self.table.setItem(row, 0, QTableWidgetItem(str(task["rel_path"])))
         self.table.setItem(row, 1, QTableWidgetItem(self._display_task_type(task)))
-        self.table.setItem(row, 2, QTableWidgetItem(self._display_status(task["status"])))
+        self.table.setItem(row, 2, QTableWidgetItem(self._display_matched_video(task)))
+        self.table.setItem(row, 3, QTableWidgetItem(self._display_status(task["status"])))
         self.file_list.append(task)
 
     def _drop_finished(self, added: int):
@@ -1627,8 +1645,8 @@ class MainWindow(FramelessMainWindow):
         if 0 <= row < self.table.rowCount():
             if 0 <= row < len(self.file_list):
                 self.file_list[row]["status"] = status_text
-            self.table.setItem(row, 2, QTableWidgetItem(self._display_status(status_text)))
-            self.table.scrollToItem(self.table.item(row, 2))
+            self.table.setItem(row, 3, QTableWidgetItem(self._display_status(status_text)))
+            self.table.scrollToItem(self.table.item(row, 3))
 
     def _update_progress(self, percent: int, text: str):
         self.progress.setValue(percent)
