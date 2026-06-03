@@ -658,11 +658,19 @@ class ProcessWorker(QObject):
         skipped = 0
         total = len(self.items)
         update_batch: list[tuple[int, str, object]] = []
-        _assign_target_paths(self.items, self.prefixes)
+        reserved: set[Path] = set()
 
         for index, item in enumerate(self.items):
             row_index = item.row_index if item.row_index >= 0 else index
             progress_percent = int(((index + 1) / total) * 100) if total else 0
+            try:
+                target_path = _unique_target_path(item, reserved, self.prefixes)
+            except Exception:
+                target_path = None
+            item.target_path = target_path
+            item.target_name = target_path.name if target_path is not None else ""
+            if target_path is not None:
+                reserved.add(_safe_resolve(target_path))
             target_path = item.target_path
 
             if item.timestamp is None or target_path is None:
@@ -673,6 +681,7 @@ class ProcessWorker(QObject):
                     self._emit_update_batch(update_batch)
                 if _should_emit_progress(index, total):
                     self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
+                    QThread.msleep(1)
                 continue
 
             if _is_same_path(item.path, target_path):
@@ -690,6 +699,7 @@ class ProcessWorker(QObject):
                     self._emit_update_batch(update_batch)
                 if _should_emit_progress(index, total):
                     self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
+                    QThread.msleep(1)
                 continue
 
             try:
@@ -710,6 +720,7 @@ class ProcessWorker(QObject):
                 self._emit_update_batch(update_batch)
             if _should_emit_progress(index, total):
                 self.progress_update.emit(progress_percent, f"progress|{index + 1}|{total}")
+                QThread.msleep(1)
 
         self._emit_update_batch(update_batch)
         self.finished.emit({"success": success, "failed": failed, "skipped": skipped})
@@ -1171,6 +1182,8 @@ class MainWindow(FramelessMainWindow):
             or self._scan_drain_timer.isActive()
             or bool(self._reference_row_queue)
             or bool(self._target_row_queue)
+            or self._process_drain_timer.isActive()
+            or bool(self._process_update_queue)
         )
 
     def _init_default_dirs(self):
@@ -1852,7 +1865,7 @@ class MainWindow(FramelessMainWindow):
 
     def _queue_process_updates(self, updates: list[tuple[int, str, object]]):
         self._process_update_queue.extend(updates)
-        if not self._process_drain_timer.isActive():
+        if not self.is_processing and not self._process_drain_timer.isActive():
             self._process_drain_timer.start()
 
     def _drain_process_updates(self):
@@ -1913,11 +1926,11 @@ class MainWindow(FramelessMainWindow):
 
     def _processing_finished(self, result: dict):
         self._pending_process_result = result
+        self.is_processing = False
         if not self._process_drain_timer.isActive():
             self._process_drain_timer.start()
 
     def _apply_processing_finished(self, result: dict):
-        self.is_processing = False
         self.table.setUpdatesEnabled(True)
         self.table.viewport().update()
         for button in (
