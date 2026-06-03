@@ -1821,6 +1821,7 @@ class MainWindow(FramelessMainWindow):
         self._pending_process_result = None
         self._process_drain_timer.stop()
         self.is_processing = True
+        self.table.setUpdatesEnabled(False)
         for button in (
             self.btn_start,
             self.btn_scan_reference,
@@ -1840,10 +1841,10 @@ class MainWindow(FramelessMainWindow):
             prefixes=self._prefix_config(),
         )
         self._process_worker.moveToThread(self._process_thread)
-        self._process_thread.started.connect(self._process_worker.run)
-        self._process_worker.row_update_batch.connect(self._queue_process_updates)
-        self._process_worker.progress_update.connect(self._update_progress)
-        self._process_worker.finished.connect(self._processing_finished)
+        self._process_thread.started.connect(self._process_worker.run, Qt.ConnectionType.QueuedConnection)
+        self._process_worker.row_update_batch.connect(self._queue_process_updates, Qt.ConnectionType.QueuedConnection)
+        self._process_worker.progress_update.connect(self._update_progress, Qt.ConnectionType.QueuedConnection)
+        self._process_worker.finished.connect(self._processing_finished, Qt.ConnectionType.QueuedConnection)
         self._process_worker.finished.connect(self._process_thread.quit)
         self._process_worker.finished.connect(self._process_worker.deleteLater)
         self._process_thread.finished.connect(self._process_thread.deleteLater)
@@ -1863,10 +1864,11 @@ class MainWindow(FramelessMainWindow):
             self.table.setUpdatesEnabled(False)
             try:
                 for row, status_text, target_path_obj in updates:
-                    self._update_row_status(row, status_text, target_path_obj)
+                    self._update_row_status(row, status_text, target_path_obj, update_table=True)
             finally:
-                self.table.setUpdatesEnabled(True)
-                self.table.viewport().update()
+                if not self.is_processing:
+                    self.table.setUpdatesEnabled(True)
+                    self.table.viewport().update()
 
         if self._process_update_queue:
             return
@@ -1877,7 +1879,7 @@ class MainWindow(FramelessMainWindow):
             self._pending_process_result = None
             self._apply_processing_finished(result)
 
-    def _update_row_status(self, row: int, status_text: str, target_path_obj: object):
+    def _update_row_status(self, row: int, status_text: str, target_path_obj: object, update_table: bool = True):
         if not (0 <= row < self.table.rowCount()):
             return
 
@@ -1897,6 +1899,8 @@ class MainWindow(FramelessMainWindow):
                     item.path = target_path
                     item.rel_path = _relative_path(target_path, item.source_root)
 
+        if not update_table:
+            return
         status_item = self.table.item(row, 4)
         if status_item is None:
             self.table.setItem(row, 4, QTableWidgetItem(self._display_status(status_text)))
@@ -1914,6 +1918,8 @@ class MainWindow(FramelessMainWindow):
 
     def _apply_processing_finished(self, result: dict):
         self.is_processing = False
+        self.table.setUpdatesEnabled(True)
+        self.table.viewport().update()
         for button in (
             self.btn_start,
             self.btn_scan_reference,
