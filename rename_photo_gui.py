@@ -5,6 +5,7 @@ import ctypes
 import json
 import os
 import sys
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -55,7 +56,6 @@ from timestamp_fix_gui import (
     _safe_resolve,
     _timestamp_from_exif,
     _timestamp_from_filename,
-    _timestamp_from_windows_shell,
     setTheme,
     setThemeColor,
 )
@@ -70,6 +70,7 @@ DEFAULT_VIDEO_PREFIX = "VID"
 PROCESS_ROW_BATCH_SIZE = 100
 SCAN_ROW_DRAIN_COUNT = 80
 PROCESS_UPDATE_DRAIN_COUNT = 30
+SCAN_FUTURE_BUFFER_FACTOR = 4
 PHOTO_PREFIX_PRESETS = ("IMG", "PXL", "DSC", "PHOTO", "PIC")
 VIDEO_PREFIX_PRESETS = ("VID", "MOV", "VIDEO", "CLIP", "PXL")
 INVALID_FILENAME_CHARS = '<>:"/\\|?*'
@@ -328,6 +329,11 @@ def _should_emit_progress(index: int, total: int) -> bool:
     return (index + 1) % step == 0 or index + 1 == total
 
 
+def _default_scan_thread_count() -> int:
+    cpu_count = os.cpu_count() or 4
+    return max(2, min(8, cpu_count))
+
+
 def _pick_icon(*names: str):
     for name in names:
         icon = getattr(FluentIcon, name, None)
@@ -432,16 +438,16 @@ def _is_supported_rename_file(path: Path) -> bool:
 
 
 def detect_rename_timestamp(path: Path) -> tuple[float | None, str]:
-    # Windows Shell metadata often drops seconds, so it is only a fallback for renaming.
-    ts = _timestamp_from_exif(path)
-    if ts is not None:
-        return ts, "source_exif"
+    # Fast checks first. Opening every image or asking Windows Shell for every file makes
+    # large rename scans feel stuck.
     ts = _timestamp_from_filename(path)
     if ts is not None:
         return ts, "source_filename"
-    ts = _timestamp_from_windows_shell(path)
+
+    ts = _timestamp_from_exif(path)
     if ts is not None:
         return ts, "source_exif"
+
     ts = _earliest_file_timestamp(path)
     if ts is not None:
         return ts, "source_earliest"
@@ -482,6 +488,47 @@ def _make_target_item(file_path: Path, source_root: Path | None) -> RenameItem:
         own_timestamp=timestamp,
         own_source=source,
     )
+
+
+def _emit_scanned_items(
+    paths: list[Path],
+    recursive: bool,
+    existing: set[Path] | None,
+    make_item,
+    emit_row,
+) -> int:
+    seen: set[Path] = set(existing or set())
+    count = 0
+    max_workers = _default_scan_thread_count()
+    max_pending = max_workers * SCAN_FUTURE_BUFFER_FACTOR
+    pending: set[Future] = set()
+
+    def submit_ready(executor: ThreadPoolExecutor):
+        nonlocal count
+        for file_path, source_root in _iter_rename_paths(paths, recursive):
+            resolved = _safe_resolve(file_path)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            pending.add(executor.submit(make_item, file_path, source_root))
+            if len(pending) < max_pending:
+                continue
+            done, still_pending = wait(pending, return_when=FIRST_COMPLETED)
+            pending.clear()
+            pending.update(still_pending)
+            for future in done:
+                emit_row(future.result())
+                count += 1
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        submit_ready(executor)
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                emit_row(future.result())
+                count += 1
+
+    return count
 
 
 def _add_unique(mapping: dict[str, ReferenceItem], duplicates: set[str], key: str, item: ReferenceItem) -> None:
@@ -565,16 +612,13 @@ class ReferenceScanWorker(QObject):
         self.recursive = recursive
 
     def run(self):
-        seen: set[Path] = set()
-        count = 0
-        for file_path, source_root in _iter_rename_paths(self.paths, self.recursive):
-            resolved = _safe_resolve(file_path)
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            self.row_ready.emit(_make_reference_item(file_path, source_root))
-            count += 1
-
+        count = _emit_scanned_items(
+            self.paths,
+            self.recursive,
+            None,
+            _make_reference_item,
+            self.row_ready.emit,
+        )
         self.finished.emit(count)
 
 
@@ -588,16 +632,13 @@ class TargetScanWorker(QObject):
         self.recursive = recursive
 
     def run(self):
-        seen: set[Path] = set()
-        count = 0
-        for file_path, source_root in _iter_rename_paths(self.paths, self.recursive):
-            resolved = _safe_resolve(file_path)
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            self.row_ready.emit(_make_target_item(file_path, source_root))
-            count += 1
-
+        count = _emit_scanned_items(
+            self.paths,
+            self.recursive,
+            None,
+            _make_target_item,
+            self.row_ready.emit,
+        )
         self.finished.emit(count)
 
 
@@ -612,16 +653,13 @@ class ReferenceDropScanWorker(QObject):
         self.existing = existing
 
     def run(self):
-        seen: set[Path] = set(self.existing)
-        count = 0
-        for file_path, source_root in _iter_rename_paths(self.paths, self.recursive):
-            resolved = _safe_resolve(file_path)
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            self.row_ready.emit(_make_reference_item(file_path, source_root))
-            count += 1
-
+        count = _emit_scanned_items(
+            self.paths,
+            self.recursive,
+            self.existing,
+            _make_reference_item,
+            self.row_ready.emit,
+        )
         self.finished.emit(count)
 
 
@@ -636,16 +674,13 @@ class TargetDropScanWorker(QObject):
         self.existing = existing
 
     def run(self):
-        seen: set[Path] = set(self.existing)
-        count = 0
-        for file_path, source_root in _iter_rename_paths(self.paths, self.recursive):
-            resolved = _safe_resolve(file_path)
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            self.row_ready.emit(_make_target_item(file_path, source_root))
-            count += 1
-
+        count = _emit_scanned_items(
+            self.paths,
+            self.recursive,
+            self.existing,
+            _make_target_item,
+            self.row_ready.emit,
+        )
         self.finished.emit(count)
 
 
