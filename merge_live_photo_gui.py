@@ -17,6 +17,7 @@ from pathlib import Path
 from PIL import ExifTags, Image
 from qframelesswindow import FramelessMainWindow, StandardTitleBar
 
+from elevation_hint import attach_elevation_hint
 from file_context_menu import install_file_context_menu
 from merge_live_photo_translations import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, TRANSLATIONS
 from timestamp_fix_gui import apply_file_times_only
@@ -104,6 +105,8 @@ EXTRA_TRANSLATIONS = {
         "status_other_failed": "其他文件复制失败: {error}",
         "drop_added": "已拖拽添加 {added} 个文件，当前共 {count} 项",
         "drop_no_new": "未添加新的文件",
+        "busy_title": "正在处理",
+        "busy_content": "当前有扫描或合并任务在进行，请稍候再拖入文件。",
         "scan_none_status": "未找到文件",
         "scan_none_content": "所选目录中未找到可处理文件",
         "scan_done_status": "共扫描到 {count} 个文件，准备就绪",
@@ -148,6 +151,8 @@ EXTRA_TRANSLATIONS = {
         "status_other_failed": "Other file copy failed: {error}",
         "drop_added": "Dropped {added} file(s), total {count}",
         "drop_no_new": "No new files were added",
+        "busy_title": "Busy",
+        "busy_content": "A scan or merge task is running. Please try again shortly.",
         "scan_none_status": "No files found",
         "scan_none_content": "No processable files found in the selected folder",
         "scan_done_status": "Scanned {count} file(s), ready",
@@ -945,6 +950,8 @@ class MainWindow(FramelessMainWindow):
         header_layout.addWidget(self.title_label)
         header_layout.addWidget(self.subtitle_label)
         header_layout.addWidget(self.subtitle_note_label)
+        # 管理员权限拖拽提示：内嵌在标题/副标题下方，仅 elevated 时显示
+        self.elevation_hint = attach_elevation_hint(header_layout, self, lang=self.lang)
         if not self._embedded:
             header_layout.addLayout(language_row)
 
@@ -1282,6 +1289,7 @@ class MainWindow(FramelessMainWindow):
         self.title_label.setText(self.tr("header_title"))
         self.subtitle_label.setText(self.tr("header_subtitle"))
         self.subtitle_note_label.setText(self.tr("header_note"))
+        self.elevation_hint.set_language(self.lang)
         self.language_label.setText(self.tr("language"))
         self.input_label.setText(self.tr("source_dir"))
         self.input_edit.setPlaceholderText(self.tr("source_placeholder"))
@@ -1323,20 +1331,49 @@ class MainWindow(FramelessMainWindow):
             if status_item is not None:
                 status_item.setText(self._display_status(task["status"]))
 
+    @staticmethod
+    def _drag_paths(mime) -> list[Path]:
+        """从拖拽数据中提取本地路径。
+
+        优先使用标准 URL（资源管理器、照片应用等），部分来源（如手机助手、
+        某些看图/网盘客户端）只提供纯文本，此时退化为解析文本行中的路径。
+        """
+        paths: list[Path] = []
+        if mime.hasUrls():
+            for url in mime.urls():
+                if url.isLocalFile():
+                    local = url.toLocalFile()
+                    if local and Path(local) not in paths:
+                        paths.append(Path(local))
+        if not paths and mime.hasText():
+            for line in mime.text().splitlines():
+                candidate = line.strip().strip('"').rstrip("\\")
+                if not candidate:
+                    continue
+                path = Path(candidate)
+                if path.exists() and path not in paths:
+                    paths.append(path)
+        return paths
+
     def eventFilter(self, obj, event):
         if obj is self.table.viewport():
-            if event.type() == QEvent.Type.DragEnter:
-                if event.mimeData().hasUrls():
-                    event.acceptProposedAction()
-                    return True
-            if event.type() == QEvent.Type.DragMove:
-                if event.mimeData().hasUrls():
+            if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                # 只有在确实能接收（非忙、且能解析出路径）时才显示“可放下”，
+                # 避免光标提示可放置但松手后毫无反应。
+                if not self._is_busy() and self._drag_paths(event.mimeData()):
                     event.acceptProposedAction()
                     return True
             if event.type() == QEvent.Type.Drop:
-                paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+                paths = self._drag_paths(event.mimeData())
                 if paths:
-                    self.add_dropped_paths(paths)
+                    if self._is_busy():
+                        self._notify(
+                            self.tr("busy_title"),
+                            self.tr("busy_content"),
+                            is_error=True,
+                        )
+                    else:
+                        self.add_dropped_paths(paths)
                     event.acceptProposedAction()
                     return True
         return super().eventFilter(obj, event)

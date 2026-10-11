@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from ui_translations import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, TRANSLATIONS
+from elevation_hint import attach_elevation_hint
 from file_context_menu import install_file_context_menu
 from main_gui_logic import (
     ITEM_KIND_FIXED_LIVE,
@@ -497,6 +498,8 @@ class MainWindow(FramelessMainWindow):
         header_layout.addWidget(self.title_label)
         header_layout.addWidget(self.subtitle_label)
         header_layout.addWidget(self.subtitle_note_label)
+        # 管理员权限拖拽提示：内嵌在标题/副标题下方，仅 elevated 时显示
+        self.elevation_hint = attach_elevation_hint(header_layout, self, lang=self.lang)
         if not self._embedded:
             header_layout.addLayout(language_row)
 
@@ -853,6 +856,7 @@ class MainWindow(FramelessMainWindow):
         self.title_label.setText(self.tr("header_title"))
         self.subtitle_label.setText(self.tr("header_subtitle"))
         self.subtitle_note_label.setText(self.tr("header_note"))
+        self.elevation_hint.set_language(self.lang)
         self.language_label.setText(self.tr("language"))
         self.output_edit.setPlaceholderText(self.tr("output_placeholder"))
         self.btn_output.setText(self.tr("choose_output"))

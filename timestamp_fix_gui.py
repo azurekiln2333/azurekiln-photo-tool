@@ -9,14 +9,15 @@ import subprocess
 import sys
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-
 from PIL import ExifTags, Image
 from qframelesswindow import FramelessMainWindow, StandardTitleBar
 
+from elevation_hint import attach_elevation_hint
 from file_context_menu import install_file_context_menu
+from exiftool_resolver import resolve_exiftool, run_exiftool
 
 from PyQt6.QtCore import QEvent, QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -46,11 +47,30 @@ APP_NAME = "TimestampFixGUI"
 SUPPORTED_LANGUAGES = ("zh", "en")
 DEFAULT_LANGUAGE = "zh"
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".heic", ".heif", ".png", ".tif", ".tiff", ".webp")
-VIDEO_SUFFIXES = (".mp4", ".mov", ".m4v", ".3gp")
+VIDEO_SUFFIXES = (".mp4", ".mov", ".m4v", ".3gp", ".avi", ".wmv", ".mkv")
 SUPPORTED_SUFFIXES = IMAGE_SUFFIXES + VIDEO_SUFFIXES
 EXIFTOOL_TIMEOUT_SECONDS = 60
 EXIF_DATETIME_TAGS = ("DateTimeOriginal", "DateTimeDigitized", "DateTime")
 EXIF_SUBSEC_TAGS = ("SubSecTimeOriginal", "SubSecTimeDigitized", "SubSecTime")
+#: Exif SubIFD 指针：DateTimeOriginal 等真实拍摄时间位于子 IFD，而不是 IFD0。
+EXIF_IFD_POINTERS = (0x8769, 0xA005)
+#: 相机「未设置时钟」时写入的占位时间，命中后应继续寻找更可信的来源。
+PLACEHOLDER_EXIF_TIMES = {
+    (1970, 1, 1, 0, 0, 0),
+    (1980, 1, 1, 0, 0, 0),
+    (2000, 1, 1, 0, 0, 0),
+    (2001, 1, 1, 0, 0, 0),
+}
+#: 视频容器里可能存放拍摄/创建时间的标签。
+#: AVI（RIFF）用 ``DateCreated``（IDIT 块），MP4/MOV 用 ``CreateDate`` 系列。
+VIDEO_DATE_TAGS = (
+    "DateCreated",
+    "CreationDate",
+    "CreateDate",
+    "MediaCreateDate",
+    "TrackCreateDate",
+    "DateTimeOriginal",
+)
 WINDOWS_MEDIA_DATE_PROPERTY_IDS = (12, 208, 182, 183, 191)
 UI_ROW_DRAIN_COUNT = 120
 FILENAME_TIME_PATTERNS = (
@@ -95,6 +115,7 @@ TRANSLATIONS = {
         "source_exif": "EXIF 拍摄时间",
         "source_filename": "文件名时间",
         "source_earliest": "文件现有最早时间",
+        "source_media_created": "媒体创建时间",
         "source_unknown": "未知",
         "yes": "是",
         "no": "否",
@@ -143,6 +164,7 @@ TRANSLATIONS = {
         "source_exif": "EXIF capture time",
         "source_filename": "Filename time",
         "source_earliest": "Earliest existing file time",
+        "source_media_created": "Media creation time",
         "source_unknown": "Unknown",
         "yes": "Yes",
         "no": "No",
@@ -392,34 +414,103 @@ def _timestamp_from_windows_shell(path: Path) -> float | None:
     return None
 
 
+def _is_placeholder_timestamp(timestamp: float | None) -> bool:
+    """判断是否为相机「未设置时钟」时写入的占位时间。"""
+    if timestamp is None:
+        return True
+    try:
+        dt = datetime.fromtimestamp(timestamp)
+    except (OSError, OverflowError, ValueError):
+        return True
+    return (dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second) in PLACEHOLDER_EXIF_TIMES
+
+
+def _timestamp_from_xmp(img) -> float | None:
+    """从 XMP 中兜底读取创建时间（EXIF 缺失或被剥离时常见）。"""
+    try:
+        xmp = img.getxmp()
+    except Exception:
+        return None
+    if not xmp:
+        return None
+
+    entries: list[tuple[int, str]] = []
+
+    def collect(node) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, (dict, list)):
+                    collect(value)
+                elif isinstance(value, str) and "date" in str(key).casefold():
+                    key_text = str(key).casefold()
+                    # CreateDate / DateTimeOriginal 比 ModifyDate 更接近拍摄时间
+                    if "createdate" in key_text or "datetimeoriginal" in key_text:
+                        priority = 0
+                    elif "modifydate" in key_text or "metadatadate" in key_text:
+                        priority = 2
+                    else:
+                        priority = 1
+                    entries.append((priority, value))
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(xmp)
+    for _priority, value in sorted(entries, key=lambda entry: entry[0]):
+        ts = _parse_exif_datetime(value)
+        if ts is not None and not _is_placeholder_timestamp(ts):
+            return ts
+    return None
+
+
 def _timestamp_from_exif(path: Path) -> float | None:
+    """读取图片的拍摄时间。
+
+    ``Image.getexif()`` 只返回 IFD0，而真正的拍摄时间
+    ``DateTimeOriginal`` / ``DateTimeDigitized`` 位于 Exif SubIFD（0x8769）。
+    如果不显式读取子 IFD，就只能拿到 IFD0 的 ``ModifyDate``——很多相机在
+    时钟未设置时会把它写成 ``2001:01:01 00:00:00`` 这类占位值，于是真实
+    拍摄时间被覆盖。因此这里按 IFD0 + SubIFD + XMP 依次查找，并跳过占位值。
+    """
     if path.suffix.lower() not in IMAGE_SUFFIXES:
         return None
     try:
         with Image.open(path) as img:
             exif = img.getexif()
-            if not exif:
-                return None
+            if exif:
+                tag_lookup = {name: key for key, name in ExifTags.TAGS.items()}
+                sources: list = [exif]
+                for pointer in EXIF_IFD_POINTERS:
+                    try:
+                        sub_ifd = exif.get_ifd(pointer)
+                    except Exception:
+                        sub_ifd = None
+                    if sub_ifd:
+                        sources.append(sub_ifd)
 
-            tag_lookup = {name: key for key, name in ExifTags.TAGS.items()}
-            for tag_name in EXIF_DATETIME_TAGS:
-                tag_id = tag_lookup.get(tag_name)
-                if tag_id is None:
-                    continue
-                value = exif.get(tag_id)
-                subsec = None
-                for subsec_name in EXIF_SUBSEC_TAGS:
-                    subsec_id = tag_lookup.get(subsec_name)
-                    if subsec_id is not None:
-                        subsec = exif.get(subsec_id)
-                        if subsec:
-                            break
-                ts = _parse_exif_datetime(value, subsec)
-                if ts is not None:
-                    return ts
+                for tag_name in EXIF_DATETIME_TAGS:
+                    tag_id = tag_lookup.get(tag_name)
+                    if tag_id is None:
+                        continue
+                    for source in sources:
+                        value = source.get(tag_id)
+                        if not value:
+                            continue
+                        subsec = None
+                        for subsec_name in EXIF_SUBSEC_TAGS:
+                            subsec_id = tag_lookup.get(subsec_name)
+                            if subsec_id is None:
+                                continue
+                            subsec = source.get(subsec_id)
+                            if subsec:
+                                break
+                        ts = _parse_exif_datetime(value, subsec)
+                        if ts is not None and not _is_placeholder_timestamp(ts):
+                            return ts
+
+            return _timestamp_from_xmp(img)
     except Exception:
         return None
-    return None
 
 
 def _timestamp_from_filename(path: Path) -> float | None:
@@ -434,6 +525,135 @@ def _timestamp_from_filename(path: Path) -> float | None:
             continue
     return None
 
+def _parse_video_datetime(value: object, assume_utc: bool = False) -> float | None:
+    """解析视频容器里的时间字符串。
+
+    兼容三类写法：
+
+    * ISO 8601（MP4/MOV 的 ``creation_time``，通常带 ``Z``，即 UTC）；
+    * ``2019:07:04 15:22:33``（AVI/RIFF 的 ``DateCreated``，本地时间）；
+    * ``2019-07-04 15:22:33``（部分容器写入的本地时间）。
+    """
+    if value is None:
+        return None
+    text = str(value).strip().strip('"')
+    if not text or text.startswith("0000"):
+        return None
+
+    normalized = text[:-1] + "+00:00" if text[-1:] in ("Z", "z") else text
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        dt = None
+    if dt is not None:
+        if dt.tzinfo is not None:
+            return dt.timestamp()
+        if assume_utc:
+            return dt.replace(tzinfo=timezone.utc).timestamp()
+        return dt.timestamp()
+
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y:%m:%d %H:%M:%S.%f"):
+        try:
+            dt = datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+        if assume_utc:
+            return dt.replace(tzinfo=timezone.utc).timestamp()
+        return dt.timestamp()
+    return None
+
+
+def _timestamp_from_ffprobe(path: Path) -> float | None:
+    """用 ffprobe 读取视频容器时间。
+
+    ``creation_time`` 是 QuickTime/MP4 的 UTC 时间；AVI（RIFF）没有该标签，
+    拍摄日期存放在 ``date``（IDIT 块）中，且为本地时间。旧实现只查
+    ``creation_time``，所以 AVI 永远读不到时间。
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format_tags=creation_time,date:stream_tags=creation_time",
+                "-of",
+                "default=noprint_wrappers=1",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except Exception:
+        return None
+
+    for line in (result.stdout or "").splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if not value.strip():
+            continue
+        key = key.rsplit(":", 1)[-1].strip().casefold()
+        ts = _parse_video_datetime(value, assume_utc=key == "creation_time")
+        if ts is not None and not _is_placeholder_timestamp(ts):
+            return ts
+    return None
+
+
+def _timestamp_from_video_metadata(path: Path) -> float | None:
+    """用 ExifTool 兜底读取视频创建时间。
+
+    覆盖 ffprobe 缺失（便携版未内置 ffmpeg）以及 AVI/RIFF ``DateCreated``、
+    WMV、MKV 等容器的差异。``QuickTimeUTC=1`` 让 ExifTool 把 QuickTime 时间
+    按 UTC 转成本地时间，与 ffprobe 的结果保持一致。
+    """
+    args = [
+        "-api",
+        "QuickTimeUTC=1",
+        "-s3",
+        "-d",
+        "%Y:%m:%d %H:%M:%S",
+        *(f"-{tag}" for tag in VIDEO_DATE_TAGS),
+        str(_safe_resolve(path)),
+    ]
+    try:
+        result = run_exiftool(
+            args,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=EXIFTOOL_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return None
+    if result is None or result.returncode != 0:
+        return None
+
+    for line in (result.stdout or "").splitlines():
+        ts = _parse_video_datetime(line)
+        if ts is not None and not _is_placeholder_timestamp(ts):
+            return ts
+    return None
+
+
+def _timestamp_from_media_created(path: Path) -> float | None:
+    """读取视频的拍摄/创建时间。
+
+    依次尝试 ffprobe 与 ExifTool；都拿不到时返回 ``None``，由调用方继续回退到
+    文件名和文件时间。
+    """
+    if path.suffix.lower() not in VIDEO_SUFFIXES:
+        return None
+
+    ts = _timestamp_from_ffprobe(path)
+    if ts is not None:
+        return ts
+    return _timestamp_from_video_metadata(path)
 
 def _earliest_file_timestamp(path: Path) -> float | None:
     try:
@@ -452,6 +672,10 @@ def _earliest_file_timestamp(path: Path) -> float | None:
 
 
 def detect_timestamp(path: Path) -> tuple[float | None, str]:
+    if path.suffix.lower() in VIDEO_SUFFIXES:
+        ts = _timestamp_from_media_created(path)
+        if ts is not None:
+            return ts, "source_media_created"
     ts = _timestamp_from_windows_shell(path)
     if ts is not None:
         return ts, "source_exif"
@@ -567,21 +791,13 @@ def _exiftool_candidates() -> list[str]:
 
 @lru_cache(maxsize=1)
 def _find_exiftool() -> str | None:
-    for candidate in _exiftool_candidates():
-        if candidate != "exiftool" and not Path(candidate).exists():
-            continue
-        try:
-            result = subprocess.run(
-                [candidate, "-ver"],
-                capture_output=True,
-                timeout=EXIFTOOL_TIMEOUT_SECONDS,
-                startupinfo=_startupinfo(),
-            )
-            if result.returncode == 0:
-                return candidate
-        except Exception:
-            continue
-    return None
+    """已废弃：保留仅为兼容旧调用。
+
+    统一改用 :func:`exiftool_resolver.resolve_exiftool`，
+    它会额外处理 PyInstaller onefile 下 stub 自定位失效的问题。
+    """
+    cmd = resolve_exiftool()
+    return cmd.exiftool_path if cmd is not None else None
 
 
 def _batch_exiftool_supported_exts() -> tuple[str, ...]:
@@ -589,8 +805,8 @@ def _batch_exiftool_supported_exts() -> tuple[str, ...]:
 
 
 def _apply_batch_exiftool(source_root: Path) -> bool:
-    exiftool = _find_exiftool()
-    if exiftool is None:
+    resolved = resolve_exiftool()
+    if resolved is None:
         return False
 
     root = _safe_resolve(source_root)
@@ -598,7 +814,6 @@ def _apply_batch_exiftool(source_root: Path) -> bool:
         return False
 
     args = [
-        exiftool,
         "-api",
         "QuickTimeUTC=1",
         "-AllDates<FileModifyDate",
@@ -623,8 +838,10 @@ def _apply_batch_exiftool(source_root: Path) -> bool:
         args.extend(["-ext", ext])
     args.extend(["-r", "."])
 
+    # 这里用 "-r ." 递归当前目录，必须把 cwd 固定为 root，
+    # 因此不能沿用 resolver 的 cwd（perl 直调模式下那是 exiftool_files）。
     result = subprocess.run(
-        args,
+        resolved.command(args),
         cwd=str(root),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -826,6 +1043,8 @@ class MainWindow(FramelessMainWindow):
         header_layout.addWidget(self.title_label)
         header_layout.addWidget(self.subtitle_label)
         header_layout.addWidget(self.subtitle_note_label)
+        # 管理员权限拖拽提示：内嵌在标题/副标题下方，仅 elevated 时显示
+        self.elevation_hint = attach_elevation_hint(header_layout, self, lang=self.lang)
         if not self._embedded:
             header_layout.addLayout(language_row)
 
@@ -1071,6 +1290,7 @@ class MainWindow(FramelessMainWindow):
         self.title_label.setText(self.tr("header_title"))
         self.subtitle_label.setText(self.tr("header_subtitle"))
         self.subtitle_note_label.setText(self.tr("header_note"))
+        self.elevation_hint.set_language(self.lang)
         self.language_label.setText(self.tr("language"))
         self.input_label.setText(self.tr("source_dir"))
         self.input_edit.setPlaceholderText(self.tr("source_placeholder"))

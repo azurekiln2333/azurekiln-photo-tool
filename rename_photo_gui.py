@@ -14,6 +14,7 @@ from pathlib import Path
 
 from qframelesswindow import FramelessMainWindow, StandardTitleBar
 
+from elevation_hint import attach_elevation_hint
 from file_context_menu import install_file_context_menu
 
 from PyQt6.QtCore import QEvent, QObject, QThread, QTimer, Qt, pyqtSignal
@@ -49,6 +50,7 @@ from timestamp_fix_gui import (
     SubtitleLabel,
     TableWidget,
     Theme,
+    VIDEO_SUFFIXES,
     apply_file_times_only,
     _earliest_file_timestamp,
     _format_timestamp,
@@ -56,13 +58,15 @@ from timestamp_fix_gui import (
     _safe_resolve,
     _timestamp_from_exif,
     _timestamp_from_filename,
+    _timestamp_from_media_created,
     setTheme,
     setThemeColor,
 )
 
 
 APP_NAME = "RenamePhotoGUI"
-VIDEO_RENAME_SUFFIXES = (".mp4", ".mov")
+#: 与时间戳修复页共用同一套视频后缀，AVI / WMV / MKV 等容器不再被直接跳过。
+VIDEO_RENAME_SUFFIXES = VIDEO_SUFFIXES
 SUPPORTED_RENAME_SUFFIXES = IMAGE_SUFFIXES + VIDEO_RENAME_SUFFIXES
 LIVE_VIDEO_STEM_SUFFIXES = ("_HEVC", "_hevc")
 DEFAULT_PHOTO_PREFIX = "IMG"
@@ -127,6 +131,7 @@ TRANSLATIONS = {
         "target_drop_added": "待重命名文件已添加 {added} 个，当前共 {count} 项",
         "drop_no_new": "未添加新的文件",
         "list_cleared": "列表已清空",
+        "hidden_correct_status": "已隐藏 {count} 个符合命名规则的文件",
         "preparing": "准备重命名",
         "progress": "正在处理 {i}/{total}",
         "task_done_status": "重命名完成：成功 {success}，失败 {failed}，跳过 {skipped}",
@@ -141,9 +146,12 @@ TRANSLATIONS = {
         "source_filename": "文件名时间",
         "source_earliest": "文件现有最早时间",
         "source_reference": "原始文件匹配",
+        "source_media_created": "媒体创建时间",
         "source_unknown": "未知",
         "match_self": "使用自身时间",
         "match_none": "-",
+        "hide_correct": "隐藏已符合规则的文件",
+        "hide_correct_tip": "文件名已符合命名规则、且与读取到的时间一致时，从待重命名列表中隐藏。",
         "invalid_folder_title": "目录无效",
         "invalid_reference_content": "请选择有效的原始文件目录。",
         "invalid_target_content": "请选择有效的待重命名目录。",
@@ -198,6 +206,7 @@ TRANSLATIONS = {
         "target_drop_added": "Added {added} target file(s), total {count}",
         "drop_no_new": "No new files were added",
         "list_cleared": "List cleared",
+        "hidden_correct_status": "Hid {count} already correct file(s)",
         "preparing": "Preparing rename",
         "progress": "Processing {i}/{total}",
         "task_done_status": "Done: {success} renamed, {failed} failed, {skipped} skipped",
@@ -212,9 +221,12 @@ TRANSLATIONS = {
         "source_filename": "Filename time",
         "source_earliest": "Earliest existing file time",
         "source_reference": "Original match",
+        "source_media_created": "Media creation time",
         "source_unknown": "Unknown",
         "match_self": "Own timestamp",
         "match_none": "-",
+        "hide_correct": "Hide already correct files",
+        "hide_correct_tip": "Hide files whose name already matches the rule and the detected time.",
         "invalid_folder_title": "Invalid folder",
         "invalid_reference_content": "Choose a valid original folder.",
         "invalid_target_content": "Choose a valid target folder.",
@@ -438,19 +450,27 @@ def _is_supported_rename_file(path: Path) -> bool:
 
 
 def detect_rename_timestamp(path: Path) -> tuple[float | None, str]:
-    # Fast checks first. Opening every image or asking Windows Shell for every file makes
-    # large rename scans feel stuck.
+    # 顺序即优先级。拍摄元数据（EXIF 的 DateTimeOriginal、视频容器的创建时间）
+    # 比文件名更可信：相机时钟未设置时文件名常常是 IMG_20010101_000000 这类
+    # 占位值，先取文件名会把真实拍摄时间整个覆盖掉。
+    if path.suffix.lower() in VIDEO_RENAME_SUFFIXES:
+        ts = _timestamp_from_media_created(path)
+        if ts is not None:
+            return ts, "source_media_created"
+    else:
+        ts = _timestamp_from_exif(path)
+        if ts is not None:
+            return ts, "source_exif"
+
+    # 元数据缺失时才退回文件名时间，最后才是文件自身的时间戳。
     ts = _timestamp_from_filename(path)
     if ts is not None:
         return ts, "source_filename"
 
-    ts = _timestamp_from_exif(path)
-    if ts is not None:
-        return ts, "source_exif"
-
     ts = _earliest_file_timestamp(path)
     if ts is not None:
         return ts, "source_earliest"
+
     return None, "source_unknown"
 
 
@@ -859,6 +879,8 @@ class MainWindow(FramelessMainWindow):
         header_layout.addWidget(self.title_label)
         header_layout.addWidget(self.subtitle_label)
         header_layout.addWidget(self.subtitle_note_label)
+        # 管理员权限拖拽提示：内嵌在标题/副标题下方，仅 elevated 时显示
+        self.elevation_hint = attach_elevation_hint(header_layout, self, lang=self.lang)
         if not self._embedded:
             header_layout.addLayout(language_row)
 
@@ -919,9 +941,14 @@ class MainWindow(FramelessMainWindow):
         self.require_reference_match_check.toggled.connect(self._on_match_option_changed)
         self.write_timestamps_check = CheckBox(self.tr("write_timestamps"), self)
         self.write_timestamps_check.setChecked(False)
+        self.hide_correct_check = CheckBox(self.tr("hide_correct"), self)
+        self.hide_correct_check.setChecked(False)
+        self.hide_correct_check.setToolTip(self.tr("hide_correct_tip"))
+        self.hide_correct_check.toggled.connect(self._on_hide_correct_changed)
         option_row.addWidget(self.include_subdirs_check)
         option_row.addWidget(self.require_reference_match_check)
         option_row.addWidget(self.write_timestamps_check)
+        option_row.addWidget(self.hide_correct_check)
         option_row.addStretch(1)
         option_layout.addLayout(option_row)
 
@@ -939,6 +966,10 @@ class MainWindow(FramelessMainWindow):
         self.quick_write_timestamps_check = CheckBox(self.tr("write_timestamps"), self)
         self.quick_write_timestamps_check.setChecked(self.write_timestamps_check.isChecked())
         self.quick_write_timestamps_check.toggled.connect(self._on_quick_write_timestamps_changed)
+        self.quick_hide_correct_check = CheckBox(self.tr("hide_correct"), self)
+        self.quick_hide_correct_check.setChecked(self.hide_correct_check.isChecked())
+        self.quick_hide_correct_check.setToolTip(self.tr("hide_correct_tip"))
+        self.quick_hide_correct_check.toggled.connect(self._on_quick_hide_correct_changed)
         self.photo_prefix_label = BodyLabel(self.tr("photo_prefix"), self)
         self.photo_prefix_edit = LineEdit(self)
         self.photo_prefix_edit.setText(DEFAULT_PHOTO_PREFIX)
@@ -964,6 +995,7 @@ class MainWindow(FramelessMainWindow):
         prefix_row.addWidget(self.btn_video_prefix_menu)
         quick_option_row.addWidget(self.quick_require_reference_match_check)
         quick_option_row.addWidget(self.quick_write_timestamps_check)
+        quick_option_row.addWidget(self.quick_hide_correct_check)
         quick_option_row.addStretch(1)
         quick_option_layout.addLayout(prefix_row)
         quick_option_layout.addLayout(quick_option_row)
@@ -1187,6 +1219,34 @@ class MainWindow(FramelessMainWindow):
             video=_normalize_prefix(self.video_prefix_edit.text(), DEFAULT_VIDEO_PREFIX),
         )
 
+    def _item_is_correct(self, item: RenameItem) -> bool:
+        """文件名已符合命名规则，且与读取到的时间（元数据）一致。"""
+        if item.timestamp is None:
+            return False
+        return _is_generated_target_name(item.path, item.timestamp, self._prefix_config())
+
+    def _apply_row_visibility(self) -> int:
+        """按「隐藏已符合规则的文件」选项过滤待重命名列表。
+
+        只切换行可见性（``setRowHidden``），不重建表格，因此行号始终与
+        ``self.file_list`` 的下标一一对应，处理过程中的回写不会错位。
+        """
+        hide = self.hide_correct_check.isChecked()
+        hidden = 0
+        row_count = self.table.rowCount()
+        self.table.setUpdatesEnabled(False)
+        try:
+            for row in range(row_count):
+                if hide and row < len(self.file_list) and self._item_is_correct(self.file_list[row]):
+                    self.table.setRowHidden(row, True)
+                    hidden += 1
+                else:
+                    self.table.setRowHidden(row, False)
+        finally:
+            self.table.setUpdatesEnabled(True)
+            self.table.viewport().update()
+        return hidden
+
     def _set_prefix_text(self, photo: str | None = None, video: str | None = None):
         if photo is not None:
             self.photo_prefix_edit.setText(_normalize_prefix(photo, DEFAULT_PHOTO_PREFIX))
@@ -1257,6 +1317,7 @@ class MainWindow(FramelessMainWindow):
             "include_subdirs": self.include_subdirs_check.isChecked(),
             "require_reference_match": self.require_reference_match_check.isChecked(),
             "write_timestamps": self.write_timestamps_check.isChecked(),
+            "hide_correct": self.hide_correct_check.isChecked(),
             "photo_prefix": prefixes.photo,
             "video_prefix": prefixes.video,
         }
@@ -1308,6 +1369,7 @@ class MainWindow(FramelessMainWindow):
             self.include_subdirs_check.setChecked(bool(data.get("include_subdirs", True)))
             self.require_reference_match_check.setChecked(bool(data.get("require_reference_match", True)))
             self.write_timestamps_check.setChecked(bool(data.get("write_timestamps", False)))
+            self.hide_correct_check.setChecked(bool(data.get("hide_correct", False)))
             self._set_prefix_text(
                 photo=str(data.get("photo_prefix", DEFAULT_PHOTO_PREFIX)),
                 video=str(data.get("video_prefix", DEFAULT_VIDEO_PREFIX)),
@@ -1332,11 +1394,14 @@ class MainWindow(FramelessMainWindow):
         try:
             self.quick_require_reference_match_check.blockSignals(True)
             self.quick_write_timestamps_check.blockSignals(True)
+            self.quick_hide_correct_check.blockSignals(True)
             self.quick_require_reference_match_check.setChecked(self.require_reference_match_check.isChecked())
             self.quick_write_timestamps_check.setChecked(self.write_timestamps_check.isChecked())
+            self.quick_hide_correct_check.setChecked(self.hide_correct_check.isChecked())
         finally:
             self.quick_require_reference_match_check.blockSignals(False)
             self.quick_write_timestamps_check.blockSignals(False)
+            self.quick_hide_correct_check.blockSignals(False)
             self._syncing_quick_options = False
 
     def _on_quick_require_reference_match_changed(self, checked: bool):
@@ -1352,6 +1417,18 @@ class MainWindow(FramelessMainWindow):
     def _on_write_timestamps_changed(self, _checked: bool):
         self._sync_quick_options()
         self._save_settings()
+
+    def _on_hide_correct_changed(self, _checked: bool):
+        self._sync_quick_options()
+        self._save_settings()
+        hidden = self._apply_row_visibility()
+        if self.hide_correct_check.isChecked():
+            self._set_status_text("hidden_correct_status", count=hidden)
+
+    def _on_quick_hide_correct_changed(self, checked: bool):
+        if self._syncing_quick_options:
+            return
+        self.hide_correct_check.setChecked(checked)
 
     def _update_reference_area_visibility(self):
         show_reference_area = self.require_reference_match_check.isChecked()
@@ -1370,6 +1447,7 @@ class MainWindow(FramelessMainWindow):
         self.title_label.setText(self.tr("header_title"))
         self.subtitle_label.setText(self.tr("header_subtitle"))
         self.subtitle_note_label.setText(self.tr("header_note"))
+        self.elevation_hint.set_language(self.lang)
         self.language_label.setText(self.tr("language"))
         self.reference_label.setText(self.tr("reference_dir"))
         self.target_label.setText(self.tr("target_dir"))
@@ -1381,8 +1459,12 @@ class MainWindow(FramelessMainWindow):
         self.include_subdirs_check.setText(self.tr("scan_subdirs"))
         self.require_reference_match_check.setText(self.tr("require_reference_match"))
         self.write_timestamps_check.setText(self.tr("write_timestamps"))
+        self.hide_correct_check.setText(self.tr("hide_correct"))
+        self.hide_correct_check.setToolTip(self.tr("hide_correct_tip"))
         self.quick_require_reference_match_check.setText(self.tr("require_reference_match"))
         self.quick_write_timestamps_check.setText(self.tr("write_timestamps"))
+        self.quick_hide_correct_check.setText(self.tr("hide_correct"))
+        self.quick_hide_correct_check.setToolTip(self.tr("hide_correct_tip"))
         self.photo_prefix_label.setText(self.tr("photo_prefix"))
         self.video_prefix_label.setText(self.tr("video_prefix"))
         self.btn_photo_prefix_menu.setText(self.tr("prefix_presets"))
@@ -1672,6 +1754,9 @@ class MainWindow(FramelessMainWindow):
         self.table.setItem(row, 2, QTableWidgetItem(_format_timestamp(item.timestamp)))
         self.table.setItem(row, 3, QTableWidgetItem(item.target_name or self.tr("target_unknown")))
         self.table.setItem(row, 4, QTableWidgetItem(self._display_status(item.status)))
+        # 扫描是分批灌入的，逐行判断可以避免每次新增都全表刷新。
+        if self.hide_correct_check.isChecked() and self._item_is_correct(item):
+            self.table.setRowHidden(row, True)
 
     def _queue_reference_row(self, item: ReferenceItem):
         self._reference_row_queue.append(item)
@@ -1746,6 +1831,7 @@ class MainWindow(FramelessMainWindow):
         self.table.setRowCount(0)
         for item in self.file_list:
             self._append_target_table_row(item)
+        self._apply_row_visibility()
 
     def _reference_drop_finished(self, added: int):
         self._pending_reference_drop_result = added
@@ -1991,6 +2077,8 @@ class MainWindow(FramelessMainWindow):
     def _apply_processing_finished(self, result: dict):
         self.table.setUpdatesEnabled(True)
         self.table.viewport().update()
+        # 重命名后这些文件已经符合规则，勾选隐藏时一并收起。
+        self._apply_row_visibility()
         for button in (
             self.btn_start,
             self.btn_scan_reference,

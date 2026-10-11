@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from elevation_hint import attach_elevation_hint
 from main_gui import MainWindow as FlymeFixWindow
 from dedupe_media_gui import MainWindow as DedupeMediaWindow
 from merge_live_photo_gui import MainWindow as MergeLivePhotoWindow
@@ -262,6 +263,8 @@ class SettingsPage(QWidget):
 
         content_layout.addWidget(self.title_label)
         content_layout.addWidget(self.subtitle_label)
+        # 管理员权限拖拽提示：内嵌在设置页标题/副标题下方，仅 elevated 时显示
+        self.elevation_hint = attach_elevation_hint(content_layout, self)
         content_layout.addWidget(self.language_card)
         self._build_feature_settings(content_layout)
         content_layout.addStretch(1)
@@ -359,6 +362,7 @@ class SettingsPage(QWidget):
         text = TRANSLATIONS[lang]
         self.title_label.setText(text["settings_title"])
         self.subtitle_label.setText(text["settings_subtitle"])
+        self.elevation_hint.set_language(lang)
         self.language_label.setText(text["language"])
         for key, labels in self._labels.items():
             for label in labels:
