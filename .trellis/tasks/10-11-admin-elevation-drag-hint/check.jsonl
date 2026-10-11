@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/10-11-admin-elevation-drag-hint/prd.md", "reason": "验收标准 AC1-AC8，check 阶段逐条核对"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "质量检查项（模板占位，用于确认无既有强制约定）"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "质量检查项（模板占位，用于确认无既有强制约定）"}
+{"file": ".workbuddy-ai/memory/MEMORY.md", "reason": "项目验证约定：无头 GUI 测试（offscreen + 临时 APPDATA）、翻译键需 zh/en 补齐、UI 文案中英双语"}

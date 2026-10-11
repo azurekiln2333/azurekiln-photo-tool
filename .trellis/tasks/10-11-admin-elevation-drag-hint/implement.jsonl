@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/10-11-admin-elevation-drag-hint/prd.md", "reason": "本任务的完整需求、验收标准与约束（权限检测、提示位置/形态、覆盖入口、文案、保留既有改进、复用要求）"}
+{"file": ".trellis/spec/backend/index.md", "reason": "项目 spec 索引（当前为模板占位，用于确认无既有强制约定）"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "项目 spec 索引（当前为模板占位，用于确认无既有强制约定）"}
+{"file": ".workbuddy-ai/memory/MEMORY.md", "reason": "项目长期记忆：模块职责、翻译机制、无头 GUI 测试方式、打包约定，指导改动边界与验证方式"}
