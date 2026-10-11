@@ -5,6 +5,8 @@ import subprocess
 from pathlib import Path
 import shutil
 
+from exiftool_resolver import resolve_exiftool
+
 
 def _contains_any(data: bytes, patterns: tuple[bytes, ...]) -> bool:
     return any(pattern in data for pattern in patterns)
@@ -70,7 +72,10 @@ class LivePhotoFixTool:
     """魅族实况照片修复引擎"""
 
     def __init__(self):
-        self.exiftool_path = self._get_exiftool_path()
+        self._exiftool = resolve_exiftool()
+        self.exiftool_path = (
+            self._exiftool.exiftool_path if self._exiftool is not None else None
+        )
         self._check_exiftool()
 
     def _startupinfo(self):
@@ -80,63 +85,37 @@ class LivePhotoFixTool:
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         return startupinfo
 
-    def _get_exiftool_path(self) -> str:
-        env_path = os.environ.get('EXIFTOOL_PATH')
-        if env_path and os.path.exists(env_path):
-            return env_path
-
-        if hasattr(sys, '_MEIPASS'):
-            bundle_candidates = (
-                os.path.join(sys._MEIPASS, 'exiftool.exe'),
-                os.path.join(sys._MEIPASS, 'exiftool'),
-                os.path.join(sys._MEIPASS, 'exiftool', 'exiftool.exe'),
-                os.path.join(sys._MEIPASS, 'exiftool', 'exiftool'),
-            )
-            for bundle_path in bundle_candidates:
-                if os.path.exists(bundle_path):
-                    return bundle_path
-
-        # Prefer repository-bundled exiftool first to avoid unexpected system version differences.
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        candidates = (
-            os.path.join(base_dir, 'vendor', 'exiftool', 'exiftool.exe'),
-            os.path.join(base_dir, 'vendor', 'exiftool', 'exiftool'),
-            os.path.join(base_dir, 'exiftool', 'exiftool.exe'),
-            os.path.join(base_dir, 'exiftool', 'exiftool'),
-            os.path.join(base_dir, 'bin', 'exiftool.exe'),
-            os.path.join(base_dir, 'bin', 'exiftool'),
-        )
-        for local_path in candidates:
-            if os.path.exists(local_path):
-                return local_path
-        return 'exiftool'
-
     def _run_exiftool(self, cmd: list[str]) -> subprocess.CompletedProcess:
+        """执行 ExifTool 命令。
+
+        ``cmd`` 为**不含 exiftool 本体**的参数列表；本体、perl 前置参数
+        与工作目录由 :mod:`exiftool_resolver` 统一提供，因此这里不需要
+        （也不应该）再拼 ``self.exiftool_path``。
+        """
+        if self._exiftool is None:
+            raise FileNotFoundError(
+                "未找到 exiftool！请确保 exiftool/exiftool.exe 在当前目录、EXIFTOOL_DIR、EXIFTOOL_PATH 或系统 PATH 中。"
+            )
         return subprocess.run(
-            cmd,
+            self._exiftool.command(cmd),
             capture_output=True,
             text=True,
             encoding='utf-8',
+            cwd=self._exiftool.cwd,
             startupinfo=self._startupinfo(),
         )
 
     def _check_exiftool(self):
         try:
-            subprocess.run(
-                [self.exiftool_path, '-ver'],
-                capture_output=True,
-                check=True,
-                startupinfo=self._startupinfo(),
-            )
+            self._run_exiftool(['-ver'])
         except Exception:
             raise FileNotFoundError(
-                "未找到 exiftool！请确保 exiftool/exiftool.exe 在当前目录、EXIFTOOL_PATH 或系统 PATH 中。"
+                "未找到 exiftool！请确保 exiftool/exiftool.exe 在当前目录、EXIFTOOL_DIR、EXIFTOOL_PATH 或系统 PATH 中。"
             )
 
     def fix_photo(self, input_path: Path, output_path: Path = None) -> tuple[bool, str]:
         try:
             cmd = [
-                self.exiftool_path,
                 '-P',  # 保留原图时间戳
                 '-if',
                 '$MIMEType eq "image/jpeg" and $XMP-MZCamera:LivePhoto and $XMP-MZCamera:LivePhoto ne "-000000001_-000000001"',
@@ -180,7 +159,6 @@ class LivePhotoFixTool:
                         shutil.copy2(input_path, output_path)
 
                         fallback_cmd = [
-                            self.exiftool_path,
                             '-P',
                             '-overwrite_original',
                             '-if',
