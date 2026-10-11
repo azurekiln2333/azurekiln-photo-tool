@@ -52,3 +52,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 3: 填充项目 spec：Web 模板改写为 python/pyqt 真实约定
+<!-- trellis-session: v=2 fp=5ae85dd313ae4895 -->
+
+**Date**: 2026-10-12
+**Task**: 填充项目 spec：Web 模板改写为 python/pyqt 真实约定
+**Branch**: `main`
+
+### Summary
+
+删除 trellis init 生成的 backend/frontend Web 全栈模板占位，按'记录现实而非理想'原则重建为两层：python（非 GUI 核心逻辑：结构、错误处理、日志现状、ExifTool 与元数据、打包、质量）+ pyqt（界面：页面结构/embedded 双模式、Fluent 控件、QThread+队列 drain、zh/en 翻译、质量）。内容全部来自真实代码与历史。归档 00-bootstrap-guidelines。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `527ad4b` | docs(spec): replace web templates with real python/pyqt guidelines |
+
+### Status
+
+[OK] **Completed**
