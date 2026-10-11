@@ -21,9 +21,13 @@ the rest conversationally.
 
 ## Status (update the checkboxes as you complete each item)
 
-- [ ] Fill backend guidelines
-- [ ] Fill frontend guidelines
-- [ ] Add code examples
+- [x] Fill backend guidelines -> 已改写为 `.trellis/spec/python/`（核心逻辑层，贴合本项目）
+- [x] Fill frontend guidelines -> 已改写为 `.trellis/spec/pyqt/`（界面层，贴合本项目）
+- [x] Add code examples -> 各文档均引用真实文件与真实代码片段
+
+> 说明：Trellis 的 `backend`/`frontend` 模板面向 Web 全栈（Node/TS/ORM），与本项目
+> （Python + PyQt6 桌面工具）不符。按「记录现实而非理想」原则，已删除两个占位目录，
+> 重建为 `python/`（非 GUI 核心逻辑）与 `pyqt/`（界面）两层，内容全部来自真实代码。
 
 ---
 

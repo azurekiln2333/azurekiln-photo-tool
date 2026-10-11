@@ -21,9 +21,9 @@
   "children": [],
   "parent": null,
   "relatedFiles": [
-    ".trellis/spec/backend/",
-    ".trellis/spec/frontend/"
+    ".trellis/spec/python/",
+    ".trellis/spec/pyqt/"
   ],
-  "notes": "First-time setup task created by trellis init (fullstack project)",
+  "notes": "首次初始化任务；已将 Trellis 的 backend/frontend Web 模板替换为反映本项目（Python/PyQt 桌面工具）的真实分层：python（核心逻辑）+ pyqt（界面）。",
   "meta": {}
 }
