@@ -29,3 +29,26 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 2: 文档补齐六功能页 + Flyme 修复复用 exiftool_resolver
+<!-- trellis-session: v=2 fp=39ab6444eb7f8770 -->
+
+**Date**: 2026-10-12
+**Task**: 文档补齐六功能页 + Flyme 修复复用 exiftool_resolver
+**Branch**: `main`
+
+### Summary
+
+收尾上一条会话遗留的两个改动：README 补齐六个功能页/使用说明/项目结构；flyme_livephoto_fix_core.py 改为复用 exiftool_resolver.resolve_exiftool()，删除内联 _get_exiftool_path。工作区 clean。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8cd4974` | docs: document all six feature pages |
+| `c2ff1e2` | refactor: use shared exiftool resolver in flyme fix core |
+
+### Status
+
+[OK] **Completed**
