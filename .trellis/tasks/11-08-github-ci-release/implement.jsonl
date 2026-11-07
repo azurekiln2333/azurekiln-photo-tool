@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/python/packaging.md", "reason": "PyInstaller/ExifTool bundling layout, release naming and sha256 format"}
+{"file": ".trellis/spec/python/exiftool-and-metadata.md", "reason": "exiftool_resolver candidate dirs that the bundle must match"}
+{"file": ".trellis/spec/python/quality-guidelines.md", "reason": "Python script conventions for scripts/ci"}
+{"file": ".trellis/spec/python/project-structure.md", "reason": "where new top-level files/dirs belong"}
