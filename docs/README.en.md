@@ -53,18 +53,23 @@ The top-left menu button expands or collapses the sidebar. The three older stand
 - Operating system: Windows 10 / 11 x64
 - Runtime: no Python installation required
 
-Download the release zip and SHA256 file, extract the package, and run:
+Download one of the following from [GitHub Releases](https://github.com/azurekiln2333/azurekiln-photo-tool/releases):
+
+- Installer `AzureKilnPhotoTool-<version>-<date>-windows-x64-setup.exe`: choose "current user only (no admin)" or "all users (admin)" during setup; creates a Start menu shortcut (desktop shortcut optional) and can be uninstalled from Settings → Apps.
+- Portable `AzureKilnPhotoTool-<version>-<date>-windows-x64-portable.zip` plus the matching SHA256 file. Extract and run:
 
 ```text
 AzureKilnPhotoTool.exe
 ```
 
-Checksum example:
+The SHA256 file records the hash of `AzureKilnPhotoTool.exe`. Checksum example:
 
 ```powershell
-Get-FileHash .\AzureKilnPhotoTool-1.0.0-20260523-windows-x64-portable.zip -Algorithm SHA256
-Get-Content .\AzureKilnPhotoTool-1.0.0-20260523-windows-x64-portable.sha256.txt
+Get-FileHash .\AzureKilnPhotoTool.exe -Algorithm SHA256
+Get-Content .\AzureKilnPhotoTool-1.1.0-20261108-windows-x64-portable.sha256.txt
 ```
+
+The binaries are not code-signed, so Windows SmartScreen may show an "unknown publisher" warning on first launch.
 
 ### Run from Source
 
@@ -77,13 +82,16 @@ Requirements:
 - `Pillow`
 - Optional: `pillow-heif` for HEIC/HEIF support
 - Optional: `send2trash` for recycle-bin cleanup
+- `pywin32` for the system context menu
 - Flyme repair requires `ExifTool`
+
+Pinned versions (the ones used for release builds, Python 3.14 recommended) are listed in `requirements.txt`:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
 
-pip install PyQt6 PyQt6-Fluent-Widgets PyQt6-Frameless-Window Pillow pillow-heif send2trash pywin32
+pip install -r requirements.txt
 
 python unified_gui.py
 ```
@@ -132,19 +140,40 @@ The Flyme repair batch workflow is primarily exposed through the GUI. Its core i
 
 ## Packaging
 
-The unified GUI is best packaged as a portable directory build so ExifTool can be bundled:
+### CI Build and Release (GitHub Actions)
+
+`.github/workflows/build.yml` does all packaging on a Windows runner:
+
+- **Push to any branch**: installs `requirements-build.txt`, downloads a pinned ExifTool (13.58, SHA256-verified), builds the onefile exe from `AzureKilnPhotoTool_onefile.spec`, verifies the bundle contains `pillow_heif` and ExifTool, then produces the portable zip, SHA256 file, and Inno Setup installer as workflow artifacts (no Release).
+- **Push a `vX.Y.Z` tag**: runs the same build and creates a GitHub Release with the portable zip, `.sha256.txt`, and installer.
+
+The single source of the version is `APP_VERSION` in `unified_gui.py`. The tag must match it, otherwise the build fails and nothing is published:
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --windowed --name AzureKilnPhotoTool `
-  --collect-all qfluentwidgets `
-  --collect-all qframelesswindow `
-  --hidden-import pillow_heif `
-  --hidden-import send2trash `
-  --add-data "vendor/exiftool;exiftool" `
-  .\unified_gui.py
+# 1. Set APP_VERSION = "1.1.0" in unified_gui.py, commit and push
+# 2. Tag and push the tag
+git tag v1.1.0
+git push github v1.1.0
 ```
 
-You can use `--onefile` if you only need a single executable, but Flyme repair still requires `exiftool.exe` to be discoverable.
+### Local Build
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+
+# ExifTool folder (exiftool.exe + exiftool_files/), default D:\ProgramFiles\exiftool
+$env:EXIFTOOL_DIR = "D:\ProgramFiles\exiftool"
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm AzureKilnPhotoTool_onefile.spec
+
+# Optional: verify the bundle and create portable zip + SHA256 (written to release/)
+.\.venv\Scripts\python.exe scripts\ci\verify_bundle.py
+.\.venv\Scripts\python.exe scripts\ci\package_portable.py --version (.\.venv\Scripts\python.exe scripts\ci\get_version.py)
+
+# Optional: installer (requires Inno Setup 6)
+iscc /DAppVersion=1.1.0 installer\AzureKilnPhotoTool.iss
+```
+
+Do not pass `--clean`, and always build from a `.venv` with all dependencies installed; otherwise HEIC and recycle-bin support are silently dropped.
 
 ## Project Structure
 
@@ -157,6 +186,11 @@ You can use `--onefile` if you only need a single executable, but Flyme repair s
 - `main_gui_logic.py`: Flyme scanning, classification, output, and repair workflow.
 - `flyme_livephoto_fix_core.py`: ExifTool-based detection and repair engine.
 - `*_translations.py`: GUI localization text.
+- `requirements.txt` / `requirements-build.txt`: pinned runtime / build dependencies.
+- `AzureKilnPhotoTool_onefile.spec`: onefile PyInstaller spec (bundles ExifTool).
+- `installer/AzureKilnPhotoTool.iss`: Inno Setup installer script.
+- `scripts/ci/`: version, bundle-check, and portable-packaging scripts (shared by CI and local builds).
+- `.github/workflows/build.yml`: CI build and release workflow.
 - `sample/`: test samples.
 
 Local settings:

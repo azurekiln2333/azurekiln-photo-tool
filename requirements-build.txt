@@ -1,0 +1,5 @@
+# Build dependencies (runtime + PyInstaller). Used by CI and local packaging.
+# Install: python -m pip install -r requirements-build.txt
+-r requirements.txt
+pyinstaller==6.20.0
+pyinstaller-hooks-contrib==2026.5

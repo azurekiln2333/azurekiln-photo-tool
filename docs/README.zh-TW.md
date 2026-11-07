@@ -53,18 +53,23 @@ AzureKiln Photo Tool 是面向 Windows 的動態照片處理工具集。現在�
 - 作業系統：Windows 10 / 11 x64
 - 執行環境：不需要安裝 Python
 
-下載 release 中的可攜包與 SHA256 檔案，解壓縮後執行：
+在 [GitHub Releases](https://github.com/azurekiln2333/azurekiln-photo-tool/releases) 下載以下任一形式：
+
+- 安裝程式 `AzureKilnPhotoTool-<版本>-<日期>-windows-x64-setup.exe`：安裝時可選「僅目前使用者（免管理員）」或「所有使用者（需管理員）」，建立開始功能表捷徑（可選桌面捷徑），可在「設定 → 應用程式」中解除安裝。
+- 可攜包 `AzureKilnPhotoTool-<版本>-<日期>-windows-x64-portable.zip` 與同名 SHA256 檔案，解壓縮後執行：
 
 ```text
 AzureKilnPhotoTool.exe
 ```
 
-校驗範例：
+SHA256 檔案記錄的是 `AzureKilnPhotoTool.exe` 的雜湊，校驗範例：
 
 ```powershell
-Get-FileHash .\AzureKilnPhotoTool-1.0.0-20260523-windows-x64-portable.zip -Algorithm SHA256
-Get-Content .\AzureKilnPhotoTool-1.0.0-20260523-windows-x64-portable.sha256.txt
+Get-FileHash .\AzureKilnPhotoTool.exe -Algorithm SHA256
+Get-Content .\AzureKilnPhotoTool-1.1.0-20261108-windows-x64-portable.sha256.txt
 ```
+
+程式未做程式碼簽章，首次執行時 Windows SmartScreen 可能提示「未知的發行者」。
 
 ### 從原始碼執行
 
@@ -77,13 +82,16 @@ Get-Content .\AzureKilnPhotoTool-1.0.0-20260523-windows-x64-portable.sha256.txt
 - `Pillow`
 - 可選：`pillow-heif`，用於 HEIC/HEIF 支援
 - 可選：`send2trash`，用於移入回收站
+- `pywin32`：系統右鍵選單
 - Flyme 修復需要 `ExifTool`
+
+上述依賴的固定版本見 `requirements.txt`（發布構建所用版本，建議 Python 3.14）：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
 
-pip install PyQt6 PyQt6-Fluent-Widgets PyQt6-Frameless-Window Pillow pillow-heif send2trash pywin32
+pip install -r requirements.txt
 
 python unified_gui.py
 ```
@@ -132,19 +140,40 @@ Flyme 修復的批次流程主要透過 GUI 提供，核心邏輯位於 `flyme_l
 
 ## 打包構建
 
-統一 GUI 建議打包為可攜目錄包，方便攜帶 ExifTool：
+### 雲端構建與發布（GitHub Actions）
+
+`.github/workflows/build.yml` 在 Windows runner 上完成全部打包：
+
+- **push 到任意分支**：安裝 `requirements-build.txt`，下載固定版本 ExifTool（13.58，校驗 SHA256），以 `AzureKilnPhotoTool_onefile.spec` 打包單一執行檔，自檢產物含 `pillow_heif` 與 ExifTool，產生可攜 zip、SHA256 檔案與 Inno Setup 安裝程式，作為 workflow artifact 上傳（不發布 Release）。
+- **推送 `vX.Y.Z` 標籤**：執行同樣的構建，並自動建立 GitHub Release，上傳可攜 zip、`.sha256.txt` 與安裝程式。
+
+版本號唯一來源是 `unified_gui.py` 中的 `APP_VERSION`，標籤必須與之一致，否則構建失敗、不發布：
 
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --windowed --name AzureKilnPhotoTool `
-  --collect-all qfluentwidgets `
-  --collect-all qframelesswindow `
-  --hidden-import pillow_heif `
-  --hidden-import send2trash `
-  --add-data "vendor/exiftool;exiftool" `
-  .\unified_gui.py
+# 1. 修改 unified_gui.py 中 APP_VERSION = "1.1.0" 並提交、推送
+# 2. 建立標籤並推送
+git tag v1.1.0
+git push github v1.1.0
 ```
 
-如果只需要單一執行檔，也可使用 `--onefile`；但 Flyme 修復功能仍需要確保 `exiftool.exe` 可被程式找到。
+### 本機構建
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+
+# ExifTool 目錄（含 exiftool.exe 與 exiftool_files/），預設 D:\ProgramFiles\exiftool
+$env:EXIFTOOL_DIR = "D:\ProgramFiles\exiftool"
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm AzureKilnPhotoTool_onefile.spec
+
+# 可選：自檢並產生可攜 zip + SHA256（輸出到 release/）
+.\.venv\Scripts\python.exe scripts\ci\verify_bundle.py
+.\.venv\Scripts\python.exe scripts\ci\package_portable.py --version (.\.venv\Scripts\python.exe scripts\ci\get_version.py)
+
+# 可選：安裝程式（需安裝 Inno Setup 6）
+iscc /DAppVersion=1.1.0 installer\AzureKilnPhotoTool.iss
+```
+
+注意：不要加 `--clean`；必須使用裝齊依賴的 `.venv`，否則會靜默遺失 HEIC 與回收站功能。
 
 ## 專案結構
 
@@ -157,6 +186,11 @@ Flyme 修復的批次流程主要透過 GUI 提供，核心邏輯位於 `flyme_l
 - `main_gui_logic.py`：Flyme 檔案掃描、分類、輸出和修復流程。
 - `flyme_livephoto_fix_core.py`：基於 ExifTool 的識別與修復引擎。
 - `*_translations.py`：各功能 GUI 的多語言文字。
+- `requirements.txt` / `requirements-build.txt`：固定版本的執行 / 打包依賴。
+- `AzureKilnPhotoTool_onefile.spec`：單一執行檔打包設定（含 ExifTool）。
+- `installer/AzureKilnPhotoTool.iss`：Inno Setup 安裝程式腳本。
+- `scripts/ci/`：版本讀取、產物自檢、可攜包產生腳本（CI 與本機共用）。
+- `.github/workflows/build.yml`：雲端構建與發布流程。
 - `sample/`：測試樣例。
 
 本機設定保存位置：
