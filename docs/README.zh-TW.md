@@ -2,13 +2,17 @@
 
 [简体中文](../README.md) | 繁體中文 | [English](README.en.md)
 
-AzureKiln Photo Tool 是面向 Windows 的動態照片處理工具集。現在已將三個核心流程整合到同一個 PyQt6 / Fluent 風格 GUI，並使用 Windows 風格左側邊欄切換功能頁：
+AzureKiln Photo Tool 是面向 Windows 的動態照片處理工具集。現在已將七個功能頁整合到同一個 PyQt6 / Fluent 風格 GUI，並使用 Windows 風格左側邊欄切換功能頁：
 
 - **LivePhoto 合併**：將同名照片與影片批次合成為 Google / Microsoft Photos 可識別的 Motion Photo。
 - **華為 LivePhoto 分離**：將華為相機或系統合併得到的單一 LivePhoto JPG 批次拆分為 `JPG + MP4`。
 - **Flyme LivePhoto 修復**：修復 Flyme 12.6 以下版本系統相機拍攝的舊 LivePhoto 中繼資料相容性問題。
+- **照片時間戳記修復**：從拍攝時間還原檔案的建立、修改與存取時間。
+- **照片/影片重新命名**：依讀取到的時間將照片與影片批次重新命名為 `IMG_年月日_時分秒` / `VID_年月日_時分秒`。
+- **圖片影片去重**：依內容雜湊尋找並清理重複的圖片與影片。
+- **媒體統計**：依資料夾層級樹檢視圖片、影片與媒體總項數，並編輯所選目錄既有的 `readme.txt`。
 
-左上角選單按鈕可展開或收合邊欄。原本三個獨立 GUI 入口仍保留，方便單獨執行或回歸測試。
+左上角選單按鈕可展開或收合邊欄。每個功能頁也都保留各自的獨立 GUI 入口，方便單獨執行或回歸測試。
 
 ## 核心功能
 
@@ -34,6 +38,21 @@ AzureKiln Photo Tool 是面向 Windows 的動態照片處理工具集。現在�
 - 基於 ExifTool 修補中繼資料，讓舊 Flyme LivePhoto 能被 Microsoft Photos、Google Photos 等平台識別。
 - 支援拖曳匯入、非同步掃描、框選、排序、右鍵選單、複製/移動/修復並輸出。
 - 可依類別控制匯出範圍，並記憶輸出目錄、語言和處理選項。
+
+### 媒體統計
+
+- 拖曳、貼上或選擇一個根目錄，於背景遞迴掃描後依實際目錄層級（根目錄 / 年份 / 月份 / 任意巢狀子目錄）顯示樹狀結構，空目錄保留。
+- 欄位為「資料夾 / 圖片 / 影片 / 總項數」；總項數等於圖片數加影片數，`readme.txt` 等非媒體檔案不計入。
+- 每一列包含該目錄的直屬媒體及其所有子目錄中的媒體；每個檔案依路徑計一次，不做內容去重。
+- 副檔名沿用本工具既有格式集：圖片 `JPG/JPEG/HEIC/HEIF/PNG/TIF/TIFF/WebP`，影片 `MP4/MOV/M4V/3GP/AVI/WMV/MKV`，不分大小寫。
+- 統計僅列舉目錄項名稱與類型，不開啟媒體資料、不讀取 EXIF、不產生縮圖、不計算雜湊。
+- 支援 OneDrive「僅線上」預留項目（雲端屬性不會被當成連結跳過）；跳過符號連結與目錄聯結以避免循環。
+- 支援展開全部、收合全部、重新掃描與停止掃描；無法存取或中途停止時保留已掃描結果並標示為不完整。
+- 選取任一目錄節點後，於樹狀結構下方載入並編輯該目錄**直接包含**的 `readme.txt`（名稱不分大小寫，不繼承上層說明）。
+- 僅編輯既有的說明檔案，不建立新檔案；最高載入 2 MiB，超過上限時禁止編輯。
+- 保留可辨識的原編碼（UTF-8 / UTF-8 BOM / UTF-16 BOM / GB18030）與原換行風格；儲存時採臨時檔加置換，寫入失敗時原檔案不受損。
+- 有未儲存修改時，切換目錄、重新掃描或退出會提供儲存 / 放棄 / 取消；外部修改或刪除說明檔案時提示衝突，不靜默覆蓋。
+- 僅線上說明檔案的邊界：選取目錄時才按需讀取 `readme.txt`，OneDrive 可能因此下載該文字；離線或讀取失敗只影響說明區塊並給出提示，不影響統計，也不觸發其他媒體內容下載。目錄列舉本身可能讓雲端客戶端取回目錄中繼資料，因此不保證統計過程完全不產生網路存取。
 
 ## 已測試設備
 
@@ -108,17 +127,21 @@ bin/exiftool.exe
 ## 使用說明
 
 1. 啟動統一 GUI：`python unified_gui.py` 或執行可攜版 `AzureKilnPhotoTool.exe`。
-2. 透過左側邊欄選擇功能頁：`LivePhoto 合併`、`華為 LivePhoto 分離`、`Flyme LivePhoto 修復`。
+2. 透過左側邊欄選擇功能頁：`LivePhoto 合併`、`華為 LivePhoto 分離`、`Flyme LivePhoto 修復`、`照片時間戳記修復`、`照片/影片重新命名`、`圖片影片去重`、`媒體統計`。
 3. 點擊左上角選單按鈕可收合或展開邊欄。
 4. 在對應功能頁設定來源資料夾、輸出資料夾、掃描規則和衝突策略。
 5. 點擊目前頁面的開始、分離或修復按鈕執行批次處理。
 
-三個舊入口仍可單獨執行：
+各功能頁也保留獨立執行入口：
 
 ```powershell
 python merge_live_photo_gui.py
 python split_huawei_live_photo_gui.py
 python main_gui.py
+python timestamp_fix_gui.py
+python rename_photo_gui.py
+python dedupe_media_gui.py
+python media_statistics_gui.py
 ```
 
 ## 命令列工具
@@ -177,7 +200,7 @@ iscc /DAppVersion=1.1.0 installer\AzureKilnPhotoTool.iss
 
 ## 專案結構
 
-- `unified_gui.py`：三功能合一的側欄 GUI 入口。
+- `unified_gui.py`：七個功能頁合一的側欄 GUI 入口。
 - `merge_live_photo_gui.py`：LivePhoto 合併頁面和獨立入口。
 - `merge_live_photo.py`：命令列批次合併腳本。
 - `split_huawei_live_photo_gui.py`：華為 LivePhoto 分離頁面和獨立入口。
@@ -185,6 +208,9 @@ iscc /DAppVersion=1.1.0 installer\AzureKilnPhotoTool.iss
 - `main_gui.py`：Flyme LivePhoto 修復頁面和獨立入口。
 - `main_gui_logic.py`：Flyme 檔案掃描、分類、輸出和修復流程。
 - `flyme_livephoto_fix_core.py`：基於 ExifTool 的識別與修復引擎。
+- `media_statistics_gui.py`：媒體統計與目錄 `readme.txt` 編輯頁面和獨立入口。
+- `media_statistics_core.py`：純標準庫的目錄遞迴掃描與圖片/影片計數核心（不依賴 PyQt）。
+- `media_readme_core.py`：純標準庫的 `readme.txt` 編碼辨識、讀取與原子儲存核心（不依賴 PyQt）。
 - `*_translations.py`：各功能 GUI 的多語言文字。
 - `requirements.txt` / `requirements-build.txt`：固定版本的執行 / 打包依賴。
 - `AzureKilnPhotoTool_onefile.spec`：單一執行檔打包設定（含 ExifTool）。

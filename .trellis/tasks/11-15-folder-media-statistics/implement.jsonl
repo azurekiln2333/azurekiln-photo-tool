@@ -1,0 +1,10 @@
+{"file":".trellis/spec/python/index.md","reason":"核心模块边界与零新增依赖"}
+{"file":".trellis/spec/python/project-structure.md","reason":"扁平模块和媒体格式共用层"}
+{"file":".trellis/spec/python/error-handling.md","reason":"读写错误显式状态和线程边界"}
+{"file":".trellis/spec/python/packaging.md","reason":"新模块打包与现有依赖"}
+{"file":".trellis/spec/pyqt/index.md","reason":"独立及内嵌模式"}
+{"file":".trellis/spec/pyqt/page-structure.md","reason":"标准布局与统一入口嵌入"}
+{"file":".trellis/spec/pyqt/component-guidelines.md","reason":"Fluent 控件和内嵌反馈"}
+{"file":".trellis/spec/pyqt/threading-and-workers.md","reason":"异步扫描、批量刷新与线程生命周期"}
+{"file":".trellis/spec/pyqt/translations.md","reason":"中英文案与动态状态刷新"}
+{"file":".trellis/tasks/11-15-folder-media-statistics/research/evidence.md","reason":"OneDrive 属性、README 策略和代码接入证据"}

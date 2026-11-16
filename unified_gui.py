@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 from elevation_hint import attach_elevation_hint
 from main_gui import MainWindow as FlymeFixWindow
 from dedupe_media_gui import MainWindow as DedupeMediaWindow
+from media_statistics_gui import MainWindow as MediaStatisticsWindow
 from merge_live_photo_gui import MainWindow as MergeLivePhotoWindow
 from rename_photo_gui import MainWindow as RenamePhotoWindow
 from split_huawei_live_photo_gui import MainWindow as SplitHuaweiWindow
@@ -122,6 +123,9 @@ TRANSLATIONS["en"].update(
         "hash_thread_settings": "Hash threads",
     }
 )
+# 媒体统计页导航文案（页面内部文案由 media_statistics_gui 自带字典负责）
+TRANSLATIONS["zh"].update({"media_statistics": "媒体统计"})
+TRANSLATIONS["en"].update({"media_statistics": "Media Statistics"})
 
 
 def _import_fluent():
@@ -310,7 +314,9 @@ class SettingsPage(QWidget):
         self._button_groups.append(group)
 
     def _build_feature_settings(self, layout: QVBoxLayout):
-        merge, split, flyme, timestamp, rename, dedupe = self.feature_windows
+        # 只读取前六个功能页（后追加的页面没有统一设置项），
+        # 不依赖列表总长度，避免新增页面时六项精确解包报错。
+        merge, split, flyme, timestamp, rename, dedupe = self.feature_windows[:6]
 
         merge_layout = self._new_card("merge_settings", layout)
         self._section(merge_layout, "scan_settings")
@@ -451,6 +457,8 @@ class UnifiedMainWindow(FluentWindow):
         self._incoming_origin = QPoint()
         self._settings_path = _get_settings_path()
         self.lang = self._load_global_language()
+        # 防重入：媒体统计页的 on_ready 会回调 self.close()，避免无限递归
+        self._closing_through_media_statistics = False
 
         self._feature_windows = [
             MergeLivePhotoWindow(self, embedded=True),
@@ -468,6 +476,13 @@ class UnifiedMainWindow(FluentWindow):
             EmbeddedPage("rename", self._feature_windows[4], self),
             EmbeddedPage("dedupe", self._feature_windows[5], self),
         ]
+
+        # 媒体统计页不进 _feature_windows：它没有设置页配置项，且有独立的关闭协调。
+        self.media_statistics_window = MediaStatisticsWindow(self, embedded=True)
+        self.media_statistics_page = EmbeddedPage(
+            "media_statistics", self.media_statistics_window, self
+        )
+
         self.about_page = AboutPage(self)
         self.settings_page = SettingsPage(self._feature_windows, self)
 
@@ -505,6 +520,12 @@ class UnifiedMainWindow(FluentWindow):
             self.pages[5],
             _pick_icon("DELETE", "SEARCH", "FOLDER"),
             TRANSLATIONS[self.lang]["dedupe"],
+            NavigationItemPosition.TOP,
+        )
+        self.media_statistics_item = self.addSubInterface(
+            self.media_statistics_page,
+            _pick_icon("LIBRARY", "FOLDER", "DOCUMENT"),
+            TRANSLATIONS[self.lang]["media_statistics"],
             NavigationItemPosition.TOP,
         )
         self.about_item = self.addSubInterface(
@@ -635,6 +656,8 @@ class UnifiedMainWindow(FluentWindow):
         self.rename_item.setToolTip(text["rename"])
         self.dedupe_item.setText(text["dedupe"])
         self.dedupe_item.setToolTip(text["dedupe"])
+        self.media_statistics_item.setText(text["media_statistics"])
+        self.media_statistics_item.setToolTip(text["media_statistics"])
         self.about_item.setText(text["about"])
         self.about_item.setToolTip(text["about"])
         self.settings_item.setText(text["settings"])
@@ -644,6 +667,9 @@ class UnifiedMainWindow(FluentWindow):
 
         for feature_window in self._feature_windows:
             self._apply_feature_language(feature_window, lang)
+
+        # 媒体统计页：语言走同一套 lang / language_combo / _apply_language 约定
+        self._apply_feature_language(self.media_statistics_window, lang)
 
         if save:
             self._save_global_settings()
@@ -681,6 +707,30 @@ class UnifiedMainWindow(FluentWindow):
             self._incoming_page.setGraphicsEffect(None)
             self._incoming_page = None
             self._incoming_effect = None
+
+    def closeEvent(self, event):
+        """关闭前先协调媒体统计页的草稿/后台任务。
+
+        统计页 request_close(on_ready) 返回 True 表示现在可安全退出；
+        返回 False 表示它已接管（草稿决策条等），此时切到该页展示提示并忽略本次关闭，
+        等用户选择后页面再次调用窗口关闭，届时 on_ready 回调会重新触发 close()。
+        不在主线程阻塞等待工作线程。
+        """
+        stats = getattr(self, "media_statistics_window", None)
+        if stats is not None and not self._closing_through_media_statistics:
+            request_close = getattr(stats, "request_close", None)
+            if callable(request_close):
+                self._closing_through_media_statistics = True
+                try:
+                    ready = request_close(self.close)
+                finally:
+                    self._closing_through_media_statistics = False
+                if not ready:
+                    # 有未完成的草稿/清理：切到统计页让用户看到内嵌决策条
+                    self.switchTo(self.media_statistics_page)
+                    event.ignore()
+                    return
+        super().closeEvent(event)
 
 
 def main():

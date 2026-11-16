@@ -1,0 +1,9 @@
+{"file":".trellis/spec/python/quality-guidelines.md","reason":"语法与核心回归验证，避免新增测试框架"}
+{"file":".trellis/spec/python/media-statistics.md","reason":"最终计数快照、云占位、说明安全写回和关闭接口契约"}
+{"file":".trellis/spec/python/error-handling.md","reason":"扫描不完整与说明失败不丢数据"}
+{"file":".trellis/spec/python/packaging.md","reason":"模块打包收集和隔离配置"}
+{"file":".trellis/spec/pyqt/quality-guidelines.md","reason":"独立内嵌、语言、布局与事件验证"}
+{"file":".trellis/spec/pyqt/threading-and-workers.md","reason":"异步串读串写、UI 刷新及退出协调"}
+{"file":".trellis/spec/pyqt/translations.md","reason":"全部新状态翻译覆盖"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"计数与说明数据从核心到 UI 的契约"}
+{"file":".trellis/tasks/11-15-folder-media-statistics/research/evidence.md","reason":"云占位兼容与真实环境验证边界"}

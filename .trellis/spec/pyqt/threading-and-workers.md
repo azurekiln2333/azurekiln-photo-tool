@@ -108,6 +108,33 @@ def _is_busy(self) -> bool:
 
 ## 队列模式的一致性
 
+### 可替换任务的生命周期
+
+- `stop_event.set()` 只请求停止；旧线程尚未收尾时，不能覆盖它的唯一引用。
+- `isRunning() == False` 不代表主线程已处理 `finished`。以线程引用/身份与清理状态判断
+  是否可以启动下一任务；清理回调只清理所属线程，禁止旧回调把新线程引用置空。
+- 保存后的导航/关闭续操作须等当前 README 线程完成清理，再启动下一次读取。
+- 结果带请求代号；更换根目录/选择后丢弃过期结果。结束信号也必须遵守同一代号。
+- 最终目录快照仍走有上限的 drain，不能在完成回调中同步重刷所有目录。
+- 异步关闭必须在最后一批 UI 更新排空后再次检查。线程先退出时，关闭可能仍在等待
+  drain；重扫恢复原选择不会触发新的 README 读取，不能依赖后续读取完成信号关闭。
+
+### Qt 信号参数与回归验证
+
+`QPushButton.clicked` 会携带 `checked: bool`。带可选回调的方法不可直接连接：
+
+```python
+# 错误：False 被当作 on_success，保存后会尝试调用 False()
+button.clicked.connect(self.save_readme)
+
+# 正确：忽略信号参数，回调只通过显式关键字传入
+button.clicked.connect(lambda _checked=False: self.save_readme())
+```
+
+验证必须实际调用按钮 `.click()`，并捕获 `sys.excepthook` 的 Qt 槽异常；
+只直接调用方法无法覆盖信号参数绑定。关闭测试应运行事件循环并清理所有线程/窗口，
+不能把打印了 PASS 后的非零退出码当作通过。
+
 `rename_photo_gui.py` 用了两条独立队列 + 两个 drain 定时器（参考区/目标区），
 命名如 `_reference_row_queue` / `_scan_drain_timer`。改多区页面时注意同步。
 `split_huawei_live_photo_gui.py` / `timestamp_fix_gui.py` 与 merge 同构（单队列）。

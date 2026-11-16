@@ -2,7 +2,7 @@
 
 简体中文 | [繁體中文](docs/README.zh-TW.md) | [English](docs/README.en.md)
 
-AzureKiln Photo Tool 是一个面向 Windows 的动态照片处理工具集。当前把六个功能页合并到同一个 PyQt6 / Fluent 风格 GUI 中，并使用左侧 Windows 风格边栏切换功能页：
+AzureKiln Photo Tool 是一个面向 Windows 的动态照片处理工具集。当前把七个功能页合并到同一个 PyQt6 / Fluent 风格 GUI 中，并使用左侧 Windows 风格边栏切换功能页：
 
 - **LivePhoto 合并**：将同名照片与视频批量合成为 Google / Microsoft Photos 可识别的 Motion Photo。
 - **华为 LivePhoto 分离**：将华为相机或系统合并得到的单个 LivePhoto JPG 批量拆分为 `JPG + MP4`。
@@ -10,6 +10,7 @@ AzureKiln Photo Tool 是一个面向 Windows 的动态照片处理工具集。�
 - **照片时间戳修复**：从拍摄时间恢复文件的创建、修改和访问时间。
 - **照片/视频重命名**：按读取到的时间把照片与视频批量重命名为 `IMG_年月日_时分秒` / `VID_年月日_时分秒`。
 - **图片视频去重**：按内容哈希查找并清理重复的图片与视频。
+- **媒体统计**：按文件夹层级树查看图片、视频与媒体总项数，并编辑所选目录已有的 `readme.txt`。
 
 左上角菜单按钮可展开或收起边栏。旧的独立 GUI 入口仍保留，方便单独运行或回归测试。
 
@@ -55,6 +56,21 @@ AzureKiln Photo Tool 是一个面向 Windows 的动态照片处理工具集。�
 ### 图片视频去重
 
 - 按内容哈希查找重复的图片与视频，并支持保留策略与回收站清理。
+
+### 媒体统计
+
+- 拖入、粘贴或选择一个根目录，后台递归扫描后按真实目录层级（根目录 / 年份 / 月份 / 任意嵌套子目录）展示树，空目录保留。
+- 列为「文件夹 / 图片 / 视频 / 总项数」；总项数等于图片数加视频数，`readme.txt` 等非媒体文件不计入。
+- 每一行包含该目录的直属媒体及其所有子目录中的媒体；每个文件按路径计一次，不做内容去重。
+- 识别扩展名沿用本工具既有格式集：图片 `JPG/JPEG/HEIC/HEIF/PNG/TIF/TIFF/WebP`，视频 `MP4/MOV/M4V/3GP/AVI/WMV/MKV`，不区分大小写。
+- 统计只枚举目录项名称与类型，不打开媒体数据、不读 EXIF、不生成缩略图、不计算哈希。
+- 支持 OneDrive「仅联机」占位项（云属性不会被当成链接跳过）；跳过符号链接与目录联接以避免循环。
+- 支持展开全部、折叠全部、重新扫描与停止扫描；无法访问或中途停止时保留已扫描结果并标记为不完整。
+- 选中任一目录节点后，在树下方加载并编辑该目录**直接包含**的 `readme.txt`（名称不区分大小写，不继承上级说明）。
+- 仅编辑已存在的说明文件，不创建新文件；最高加载 2 MiB，超限时禁止编辑。
+- 保留可识别的原编码（UTF-8 / UTF-8 BOM / UTF-16 BOM / GB18030）与原换行风格；保存使用临时文件加替换，写入失败时原文件不受损。
+- 有未保存修改时切换目录、重新扫描或退出会提供保存 / 放弃 / 取消；外部修改或删除说明文件时提示冲突，不静默覆盖。
+- 仅联机说明文件的边界：选中目录时才会按需读取 `readme.txt`，OneDrive 可能因此下载该文本；离线或读取失败只影响说明区域并给出提示，不影响统计，也不触发其他媒体内容下载。目录枚举本身可能让云客户端取回目录元数据，因此不承诺统计过程完全不产生网络访问。
 
 ## 已测试设备
 
@@ -135,17 +151,21 @@ EXIFTOOL_PATH
 ## 使用说明
 
 1. 启动统一 GUI：`python unified_gui.py` 或运行便携版 `AzureKilnPhotoTool.exe`。
-2. 通过左侧边栏选择功能页：`LivePhoto 合并`、`华为 LivePhoto 分离`、`Flyme LivePhoto 修复`、`照片时间戳修复`、`照片/视频重命名`、`图片视频去重`。
+2. 通过左侧边栏选择功能页：`LivePhoto 合并`、`华为 LivePhoto 分离`、`Flyme LivePhoto 修复`、`照片时间戳修复`、`照片/视频重命名`、`图片视频去重`、`媒体统计`。
 3. 点击左上角菜单按钮可收起或展开边栏。
 4. 在对应功能页选择源目录、输出目录、扫描规则和冲突策略。
 5. 点击当前页面的开始、分离或修复按钮执行批处理。
 
-三个旧入口仍可单独运行：
+每个功能页也保留独立运行入口：
 
 ```powershell
 python merge_live_photo_gui.py
 python split_huawei_live_photo_gui.py
 python main_gui.py
+python timestamp_fix_gui.py
+python rename_photo_gui.py
+python dedupe_media_gui.py
+python media_statistics_gui.py
 ```
 
 ## 命令行工具
@@ -204,7 +224,7 @@ iscc /DAppVersion=1.1.0 installer\AzureKilnPhotoTool.iss
 
 ## 项目结构
 
-- `unified_gui.py`：六个功能页合一的侧栏 GUI 入口。
+- `unified_gui.py`：七个功能页合一的侧栏 GUI 入口。
 - `merge_live_photo_gui.py`：LivePhoto 合并页面和独立入口。
 - `merge_live_photo.py`：命令行批量合并脚本。
 - `split_huawei_live_photo_gui.py`：华为 LivePhoto 分离页面和独立入口。
@@ -215,6 +235,9 @@ iscc /DAppVersion=1.1.0 installer\AzureKilnPhotoTool.iss
 - `timestamp_fix_gui.py`：照片时间戳修复页面，并提供各页面共用的时间/元数据读取函数。
 - `rename_photo_gui.py`：照片/视频重命名页面和独立入口。
 - `dedupe_media_gui.py`：图片视频去重页面和独立入口。
+- `media_statistics_gui.py`：媒体统计与目录 `readme.txt` 编辑页面和独立入口。
+- `media_statistics_core.py`：纯标准库的目录递归扫描与图片/视频计数核心（不依赖 PyQt）。
+- `media_readme_core.py`：纯标准库的 `readme.txt` 编码识别、读取与原子保存核心（不依赖 PyQt）。
 - `exiftool_resolver.py`：ExifTool 定位与调用解析（含 PyInstaller onefile 兼容处理）。
 - `*_translations.py`：各功能 GUI 的多语言文本。
 - `requirements.txt` / `requirements-build.txt`：固定版本的运行 / 打包依赖。

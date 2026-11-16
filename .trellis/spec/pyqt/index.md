@@ -10,7 +10,7 @@
 - 控件库：`qfluentwidgets`（Fluent 风格：`TableWidget` / `CardWidget` / `PushButton` /
   `PrimaryPushButton` / `BodyLabel` / `SubtitleLabel` / `ComboBox` / `CheckBox` / `RadioButton` /
   `ProgressBar` / `InfoBar`）。
-- 主入口：`unified_gui.py`，用左侧导航栏承载 6 个功能页，把各页 `MainWindow(embedded=True)` 的
+- 主入口：`unified_gui.py`，用左侧导航栏承载 7 个功能页，把各页 `MainWindow(embedded=True)` 的
   内容搬进 `EmbeddedPage`。
 
 **没有** HTML/CSS/JS 前端、没有 React/Vue、没有 hook、没有状态管理库、没有 TypeScript。
@@ -26,6 +26,7 @@
 | [页面结构](./page-structure.md) | 功能页布局、嵌入 unified 的方式 |
 | [控件与组件约定](./component-guidelines.md) | qfluentwidgets 控件用法、图标、样式 |
 | [线程与异步](./threading-and-workers.md) | QThread + Worker + 信号 + 主线程 drain 模式 |
+| [媒体统计与目录说明](../python/media-statistics.md) | 跨层计数/说明接口、草稿守卫与异步关闭契约 |
 | [多语言文案](./translations.md) | zh/en 翻译机制、翻译键约定 |
 | [质量约定](./quality-guidelines.md) | GUI 冒烟测试、布局、可访问性 |
 

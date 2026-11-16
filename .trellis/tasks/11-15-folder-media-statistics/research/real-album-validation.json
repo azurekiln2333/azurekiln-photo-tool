@@ -1,0 +1,103 @@
+{
+  "root": "D:\\WindowsExt\\Netdisk\\PersonalDisk\\OneDrive\\MyAllAlbums\\MyAlbums\\MyCamera",
+  "images": 12162,
+  "videos": 3180,
+  "total": 15342,
+  "directories": 155,
+  "seconds": 0.923,
+  "errors": 0,
+  "independent_os_walk_match": true,
+  "media_content_open_forbidden": true,
+  "year_totals": [
+    {
+      "year": "2006",
+      "images": 125,
+      "videos": 4,
+      "total": 129
+    },
+    {
+      "year": "2007",
+      "images": 51,
+      "videos": 0,
+      "total": 51
+    },
+    {
+      "year": "2008",
+      "images": 4,
+      "videos": 335,
+      "total": 339
+    },
+    {
+      "year": "2015",
+      "images": 40,
+      "videos": 4,
+      "total": 44
+    },
+    {
+      "year": "2016",
+      "images": 91,
+      "videos": 3,
+      "total": 94
+    },
+    {
+      "year": "2017",
+      "images": 436,
+      "videos": 16,
+      "total": 452
+    },
+    {
+      "year": "2018",
+      "images": 236,
+      "videos": 43,
+      "total": 279
+    },
+    {
+      "year": "2019",
+      "images": 507,
+      "videos": 7,
+      "total": 514
+    },
+    {
+      "year": "2020",
+      "images": 556,
+      "videos": 3,
+      "total": 559
+    },
+    {
+      "year": "2021",
+      "images": 997,
+      "videos": 15,
+      "total": 1012
+    },
+    {
+      "year": "2022",
+      "images": 793,
+      "videos": 20,
+      "total": 813
+    },
+    {
+      "year": "2023",
+      "images": 762,
+      "videos": 91,
+      "total": 853
+    },
+    {
+      "year": "2024",
+      "images": 2004,
+      "videos": 293,
+      "total": 2297
+    },
+    {
+      "year": "2025",
+      "images": 3399,
+      "videos": 862,
+      "total": 4261
+    },
+    {
+      "year": "2026",
+      "images": 2161,
+      "videos": 1484,
+      "total": 3645
+    }
+  ]
+}

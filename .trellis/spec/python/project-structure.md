@@ -8,7 +8,7 @@
 
 | 文件 / 目录 | 职责 | 关键点 |
 |------|------|------|
-| `unified_gui.py` | 统一入口：左侧边栏承载 6 个功能页 | 把各功能页 `MainWindow` 以 `embedded=True` 方式嵌入，用 `takeCentralWidget()` 搬移内容 |
+| `unified_gui.py` | 统一入口：左侧边栏承载 7 个功能页 | 把各功能页 `MainWindow` 以 `embedded=True` 方式嵌入，用 `takeCentralWidget()` 搬移内容 |
 | `merge_live_photo_gui.py` | LivePhoto 合并页 + 独立入口 | 拖拽导入、异步扫描、合并批处理 |
 | `split_huawei_live_photo_gui.py` | 华为 LivePhoto 分离页 + 独立入口 | — |
 | `main_gui.py` | Flyme LivePhoto 修复页 + 独立入口 | 注意：文件名是 `main_gui`，但**不是**全项目主入口 |
@@ -17,8 +17,11 @@
 | `timestamp_fix_gui.py` | 时间戳修复页 + **共用时间/元数据读取层** | 见下方「共用层」警告 |
 | `rename_photo_gui.py` | 照片/视频重命名页 + 独立入口 | 表格行号与 `file_list` 严格一一对应 |
 | `dedupe_media_gui.py` | 图片视频去重页 + 独立入口 | — |
+| `media_statistics_gui.py` | 文件夹媒体统计页 + 独立入口 | 年月目录树、已有 readme.txt 编辑、草稿与关闭协调 |
+| `media_statistics_core.py` | 只读目录项扫描 | 标准库实现；按传入扩展名计数，不打开媒体内容 |
+| `media_readme_core.py` | 已有目录说明读写 | 编码/BOM/换行保留、2 MiB 上限、冲突检查、同目录原子替换 |
 | `exiftool_resolver.py` | ExifTool 定位与调用解析 | 处理 PyInstaller onefile 的 stub 自定位失效 |
-| `elevation_hint.py` | 管理员权限检测 + Fluent 内嵌提示条 | 被 7 个入口共用 |
+| `elevation_hint.py` | 管理员权限检测 + Fluent 内嵌提示条 | 被统一入口与各独立功能页共用 |
 | `file_context_menu.py` | 各页共用的表格右键菜单 | 用 `win32gui` / `win32com.shell` 调系统菜单 |
 | `*_translations.py` | 各功能页的 zh/en 文案 | `merge_live_photo_translations.py`、`split_huawei_live_photo_translations.py`、`ui_translations.py` |
 | `merge_live_photo.py` / `split_huawei_live_photo.py` | 命令行批量脚本 | 无 GUI，可直接跑 |
@@ -41,11 +44,12 @@
 - `rename_photo_gui.py`
 - `dedupe_media_gui.py`
 - `merge_live_photo_gui.py`
+- `media_statistics_gui.py`（仅复用媒体扩展名集合）
 
 **改这些函数会同时影响多个页面。** 修改前先搜索引用：
 
 ```bash
-grep -rn "detect_timestamp\|IMAGE_SUFFIXES\|VIDEO_SUFFIXES" --include=*.py .
+rg "detect_timestamp|IMAGE_SUFFIXES|VIDEO_SUFFIXES" -g '*.py'
 ```
 
 ---

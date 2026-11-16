@@ -7,7 +7,7 @@
 ## 每个功能页都是一个独立的 `MainWindow`
 
 每个功能页（`merge_live_photo_gui.py` / `split_huawei_live_photo_gui.py` /
-`timestamp_fix_gui.py` / `rename_photo_gui.py` / `dedupe_media_gui.py` / `main_gui.py`）
+`timestamp_fix_gui.py` / `rename_photo_gui.py` / `dedupe_media_gui.py` / `media_statistics_gui.py` / `main_gui.py`）
 都定义 `class MainWindow(FramelessMainWindow)`，既能独立运行，也能被嵌入统一 GUI。
 
 ```python
@@ -103,6 +103,12 @@ class EmbeddedPage(QWidget):
 
 `takeCentralWidget()` 只搬走内容 widget，**不重建** `self.table` 等控件，因此各页安装的
 事件过滤器（拖拽、右键菜单）在内嵌后依然有效。
+
+媒体统计页通过 `media_statistics_window` / `media_statistics_page` 单独保存，
+`_feature_windows` 保留原六页及其设置绑定；新增页的语言传播与关闭协议需显式接入。
+`UnifiedMainWindow.closeEvent()` 调用统计页 `request_close(self.close)`，返回 `False`
+时忽略本次关闭并切到统计页展示草稿决策；后台完成后再请求关闭，不能等待线程阻塞界面。
+接口详情见 [媒体统计与目录说明](../python/media-statistics.md)。
 
 ---
 
