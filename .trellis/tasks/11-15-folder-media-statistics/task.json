@@ -2,7 +2,7 @@
   "id": "folder-media-statistics",
   "name": "folder-media-statistics",
   "title": "文件夹媒体统计与目录说明编辑",
-  "description": "新增独立媒体统计页，按文件夹年月树汇总图片、视频及媒体总项数，兼容 OneDrive，并在树下方编辑所选目录已有的 readme.txt。",
+  "description": "独立媒体统计页按文件夹年月树汇总图片、视频及媒体总项数，兼容 OneDrive；紧凑说明区支持编辑后自动保存或创建所选目录的 readme.txt。",
   "status": "in_progress",
   "dev_type": null,
   "scope": "media-statistics",
@@ -15,7 +15,7 @@
   "branch": "feat/folder-media-statistics",
   "base_branch": "main",
   "worktree_path": null,
-  "commit": null,
+  "commit": "40b603c",
   "pr_url": null,
   "subtasks": [],
   "children": [],
@@ -31,6 +31,6 @@
     ".trellis/spec/python/media-statistics.md",
     ".trellis/spec/pyqt/threading-and-workers.md"
   ],
-  "notes": "用户已批准实施并要求四个 Pi 同工作区并行。功能已实现；临时目录写回测试及真实 OneDrive 只读统计通过。最终复核和构建记录见 research/final-verification.md。提交方案见 commit-plan.md，Git 提交/归档等待 Phase 3.4 确认。",
+  "notes": "2026-11-16 用户要求先 commit 再改。原功能已提交 40b603c，未 push。refinement.md 中紧凑布局与 README 自动保存/创建修订已完成，独立检查及最终 EXE 自检通过；新改动保留独立工作区 diff，未再次提交或归档。产物在 dist/compact，验证与桌面交互限制见 research/refinement-verification.md。",
   "meta": {}
 }

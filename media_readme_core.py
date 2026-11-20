@@ -1,14 +1,14 @@
 """目录 readme.txt 的读取与安全保存（仅标准库，不依赖 PyQt）。
 
 职责边界：
-- 只读取所选目录“直接包含”的、名称不区分大小写等于 readme.txt 的已有文件；
-  本模块不创建说明文件，也不递归查找上级说明。
+- 只读取所选目录“直接包含”的、名称不区分大小写等于 readme.txt 的文件，
+  缺失时提供空白文档，实际输入后才创建；不递归查找上级说明。
 - 严格识别编码（UTF-8 BOM / UTF-16 LE-BE BOM / UTF-8 / GB18030），
   禁用 errors="ignore"/"replace"；保存时仍用原编码，容不下新字符则报错且不改原文件。
 - 保留原 BOM 与主要换行风格：读取时把文本统一为 LF 交给编辑器，
   保存时再还原为原始换行风格。
-- 保存采用「同目录唯一临时文件 + flush + os.replace」，不先截断原文件；
-  失败时只清理本次确知创建的临时文件。
+- 保存先完整写入同目录唯一临时文件并 flush/fsync；已有文件用 os.replace，
+  新文件以不可覆盖的方式发布。失败时只清理本次确知创建的临时文件。
 - 保存前比较基线（原始字节长度 + 原始字节内容），发现外部修改或删除返回 conflict，
   由调用方保留草稿，绝不静默覆盖。ReadmeDocument.mtime_ns 仅作为元数据保留，
   不参与冲突判定（内容比对已覆盖同类场景，且避免 OneDrive 同步写回时间戳造成误报）。
@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,7 +54,7 @@ _NEWLINE_PROBE_CHARS = 65536
 
 @dataclass(frozen=True)
 class ReadmeDocument:
-    """已成功加载的说明文件快照，保存时以它为基线做冲突检查。"""
+    """已有文件快照或待创建空白文档，保存时以它为基线做冲突检查。"""
 
     path: Path
     text: str  # 已统一为 LF 换行的编辑器文本
@@ -62,6 +63,7 @@ class ReadmeDocument:
     newline: str  # 原主要换行风格："\r\n" / "\n" / "\r"
     baseline: bytes  # 读取时的完整原始字节
     mtime_ns: int  # 读取时的 mtime（纳秒）
+    exists: bool = True  # False 仅用于已确认目录内没有说明文件的新文档
 
     @property
     def size(self) -> int:
@@ -125,9 +127,9 @@ def _normalise_newlines(text: str) -> str:
 
 def _restore_newlines(text: str, newline: str) -> str:
     """把 LF 文本还原为指定换行风格。"""
-    if newline == _NEWLINE_LF:
-        return text
     normalised = _normalise_newlines(text)
+    if newline == _NEWLINE_LF:
+        return normalised
     if newline == _NEWLINE_CRLF:
         return normalised.replace(_NEWLINE_LF, _NEWLINE_CRLF)
     return normalised.replace(_NEWLINE_LF, _NEWLINE_CR)
@@ -209,7 +211,7 @@ def _locate_readme(directory: Path | str) -> ReadmeResult:
     - status == ready：命中，result.path 为实际路径（大小写与磁盘一致）
     - status == missing：目录可正常枚举，且确实没有 readme.txt
     - status == error：目录不存在/不是目录/不可枚举/迭代中出错，
-      或同名项的链接/类型判定失败，result.path 与 error 给出行定位信息
+      或同名项为链接/非普通文件/类型判定失败，result.path 与 error 给出定位信息
     """
     folder = _as_directory(directory)
     expected = folder / README_NAME
@@ -223,10 +225,14 @@ def _locate_readme(directory: Path | str) -> ReadmeResult:
                 try:
                     if entry.is_symlink() or entry.is_junction():
                         # 实际链接/联接说明不处理，避免写出目录
-                        continue
+                        return ReadmeResult(
+                            STATUS_ERROR, None, "说明文件是链接或联接，不支持编辑", entry_path
+                        )
                     if not entry.is_file(follow_symlinks=False):
                         # 同名但不是普通文件（例如目录）：不是可编辑说明
-                        continue
+                        return ReadmeResult(
+                            STATUS_ERROR, None, "说明文件位置被非普通文件占用", entry_path
+                        )
                 except PermissionError as exc:
                     # 类型判定失败属于读取失败，不能当作“没有说明文件”
                     return ReadmeResult(
@@ -274,7 +280,7 @@ def load_readme(directory: Path | str) -> ReadmeResult:
 
     返回状态：
     - ready：成功加载（空文件也是可编辑的已加载文档）
-    - missing：目录可正常枚举，且确实没有 readme.txt
+    - missing：目录可正常枚举，且确实没有 readme.txt；附可编辑的待创建空白文档
     - too_large：超过 MAX_README_BYTES
     - error：目录不可访问、枚举/类型判定失败、打开失败、无法识别编码等其他失败
     """
@@ -284,10 +290,19 @@ def load_readme(directory: Path | str) -> ReadmeResult:
     if located.status == STATUS_ERROR:
         return located
     if located.status == STATUS_MISSING:
-        return located
+        document = ReadmeDocument(
+            path=folder / README_NAME,
+            text="",
+            encoding="utf-8",
+            bom=b"",
+            newline=_NEWLINE_LF,
+            baseline=b"",
+            mtime_ns=0,
+            exists=False,
+        )
+        return ReadmeResult(STATUS_MISSING, document, "", document.path)
 
     found = located.path
-    expected = folder / README_NAME
 
     try:
         # 先按上限读取，避免把超大文件整体读入内存
@@ -341,13 +356,14 @@ def load_readme(directory: Path | str) -> ReadmeResult:
 
 
 def save_readme(document: ReadmeDocument, text: str) -> ReadmeResult:
-    """把编辑器文本以原编码/BOM/换行风格写回原文件（原子替换）。
+    """按原编码/BOM/换行保存；已有文件原子替换，新文件不可覆盖地创建。
 
     失败时原文件保持不变：
-    - conflict：文件被外部修改或删除（或基线读取失败）
+    - conflict：文件被外部创建、修改或删除（或基线读取失败）
     - too_large：编码后的字节超过 MAX_README_BYTES（保证保存后仍可重新加载）
     - error：编码不下、无写权限、替换失败等
     成功返回 STATUS_SAVED 与新 document（基线已更新为落盘字节）。
+    未编辑的新空白返回原 document，仍为 exists=False，不创建文件。
     """
     if document is None:
         return ReadmeResult(STATUS_ERROR, None, "缺少待保存的说明文档", None)
@@ -388,7 +404,7 @@ def save_readme(document: ReadmeDocument, text: str) -> ReadmeResult:
 
     temp_path: Path | None = None
     try:
-        # 同目录唯一临时文件，保证 os.replace 同卷原子替换
+        # 同目录唯一临时文件，保证替换或不可覆盖发布发生在同一卷
         fd, temp_name = tempfile.mkstemp(
             prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
         )
@@ -399,20 +415,43 @@ def save_readme(document: ReadmeDocument, text: str) -> ReadmeResult:
             handle.flush()
             os.fsync(handle.fileno())
 
-        # 替换前再次检查基线，进一步缩小竞争窗口
+        # 发布前再次检查基线；新文件须再次确认任意大小写的同名项均不存在
         conflict = _check_baseline(document)
         if conflict is not None:
             _safe_unlink(temp_path)
             temp_path = None
             return conflict
 
-        os.replace(temp_path, path)
-        temp_path = None  # 已被替换，不再清理
+        if document.exists:
+            os.replace(temp_path, path)
+        elif os.name == "nt":
+            # Windows rename 不覆盖已存在的目标，封住检查之后抢先创建的窗口
+            os.rename(temp_path, path)
+        else:
+            # POSIX rename 会覆盖目标，改用原子硬链接发布已完整写好的临时文件
+            os.link(temp_path, path)
+            _safe_unlink(temp_path)
+        temp_path = None  # 已发布，不再清理
+    except FileExistsError as exc:
+        _safe_unlink(temp_path)
+        if not document.exists:
+            return ReadmeResult(
+                STATUS_CONFLICT, document, "说明文件已被外部创建，未覆盖磁盘内容", path
+            )
+        return ReadmeResult(STATUS_ERROR, document, f"保存失败：{exc}", path)
     except PermissionError as exc:
         _safe_unlink(temp_path)
+        if not document.exists:
+            conflict = _check_baseline(document)
+            if conflict is not None:
+                return conflict
         return ReadmeResult(STATUS_ERROR, document, f"没有写入权限：{exc}", path)
     except OSError as exc:
         _safe_unlink(temp_path)
+        if not document.exists:
+            conflict = _check_baseline(document)
+            if conflict is not None:
+                return conflict
         return ReadmeResult(STATUS_ERROR, document, f"保存失败：{exc}", path)
     except Exception as exc:  # 防御：任何异常都必须清理临时文件
         _safe_unlink(temp_path)
@@ -433,24 +472,41 @@ def save_readme(document: ReadmeDocument, text: str) -> ReadmeResult:
         newline=document.newline,
         baseline=payload,
         mtime_ns=new_mtime_ns,
+        exists=True,
     )
     return ReadmeResult(STATUS_SAVED, saved_document, "", path)
 
 
 def _check_baseline(document: ReadmeDocument) -> ReadmeResult | None:
-    """基线检查：原文件存在且长度、原始字节均与基线一致则返回 None，否则返回 conflict。
+    """基线检查：新文件须仍不存在，已有文件须仍与加载时一致，否则返回 conflict。
 
     只比较长度与原始字节；document.mtime_ns 不参与判定（仅作元数据保留）。
     """
     path = document.path
+    if not document.exists:
+        located = _locate_readme(path.parent)
+        if located.status == STATUS_MISSING:
+            return None
+        reason = (
+            "说明文件已被外部创建，未覆盖磁盘内容"
+            if located.status == STATUS_READY
+            else located.error
+        )
+        return ReadmeResult(STATUS_CONFLICT, document, reason, path)
+
     try:
-        stat_result = path.stat()
+        stat_result = path.lstat()
     except FileNotFoundError:
         return ReadmeResult(STATUS_CONFLICT, document, "说明文件已被删除，未写入任何内容", path)
     except PermissionError as exc:
         return ReadmeResult(STATUS_CONFLICT, document, f"无法读取原文件状态：{exc}", path)
     except OSError as exc:
         return ReadmeResult(STATUS_CONFLICT, document, f"无法读取原文件状态：{exc}", path)
+
+    if not stat.S_ISREG(stat_result.st_mode):
+        return ReadmeResult(
+            STATUS_CONFLICT, document, "说明文件已变为链接或非普通文件，未写入任何内容", path
+        )
 
     if stat_result.st_size != len(document.baseline):
         return ReadmeResult(STATUS_CONFLICT, document, "说明文件已被外部修改，未覆盖磁盘内容", path)

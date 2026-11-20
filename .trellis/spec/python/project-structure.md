@@ -17,9 +17,9 @@
 | `timestamp_fix_gui.py` | 时间戳修复页 + **共用时间/元数据读取层** | 见下方「共用层」警告 |
 | `rename_photo_gui.py` | 照片/视频重命名页 + 独立入口 | 表格行号与 `file_list` 严格一一对应 |
 | `dedupe_media_gui.py` | 图片视频去重页 + 独立入口 | — |
-| `media_statistics_gui.py` | 文件夹媒体统计页 + 独立入口 | 年月目录树、已有 readme.txt 编辑、草稿与关闭协调 |
+| `media_statistics_gui.py` | 文件夹媒体统计页 + 独立入口 | 年月目录树、紧凑 readme.txt 编辑及自动保存、草稿与关闭协调 |
 | `media_statistics_core.py` | 只读目录项扫描 | 标准库实现；按传入扩展名计数，不打开媒体内容 |
-| `media_readme_core.py` | 已有目录说明读写 | 编码/BOM/换行保留、2 MiB 上限、冲突检查、同目录原子替换 |
+| `media_readme_core.py` | 目录说明读写与创建 | 编码/BOM/换行保留、2 MiB 上限、冲突检查、原子替换/不可覆盖创建 |
 | `exiftool_resolver.py` | ExifTool 定位与调用解析 | 处理 PyInstaller onefile 的 stub 自定位失效 |
 | `elevation_hint.py` | 管理员权限检测 + Fluent 内嵌提示条 | 被统一入口与各独立功能页共用 |
 | `file_context_menu.py` | 各页共用的表格右键菜单 | 用 `win32gui` / `win32com.shell` 调系统菜单 |

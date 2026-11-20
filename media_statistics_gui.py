@@ -2,10 +2,10 @@
 
 职责：
 - 递归目录树展示每个目录的图片数、视频数、总项数（口径由 media_statistics_core 计算）。
-- 选中目录后加载其直接包含的 readme.txt，可在下方纯文本编辑框修改并保存
+- 选中目录后加载其直接包含的 readme.txt，在下方编辑后自动保存，缺失时按需创建
   （读写安全性由 media_readme_core 保证）。
 
-关键约定（见任务 design.md / research/parallel-contract.md）：
+关键约定（见任务 refinement.md / design.md）：
 - 媒体扩展名唯一来源是 timestamp_fix_gui 的 IMAGE_SUFFIXES / VIDEO_SUFFIXES，
   本页导入后传给核心扫描器，不在此复制格式集。
 - 扫描与说明读写全部在后台 QThread 中执行；本页只在主线程操作控件。
@@ -13,7 +13,8 @@
   避免大量行同步插入导致界面冻结。
 - 说明读写只有一个活跃 worker，快速切换时只保留最新待读请求，
   用单调递增的 request_id 丢弃过期结果，防止串读串写。
-- 有未保存修改时切换目录/更换根目录/重扫/退出统一走草稿守卫（保存/放弃/取消）。
+- 编辑停止 800 ms 或焦点离开时自动保存；离开目录前先写完最新草稿。
+- 仅保存失败显示重试/放弃/取消，关闭失败后继续编辑会撤销关闭意图。
 - request_close(on_ready) -> bool 是唯一的关闭协调入口：
   返回 True 表示现在可以安全退出；否则在清理完成后调用 on_ready，
   且绝不阻塞主线程等待后台线程。
@@ -102,8 +103,7 @@ TRANSLATIONS = {
     "zh": {
         "app_title": "媒体统计",
         "header_title": "媒体统计",
-        "header_subtitle": "按目录统计图片、视频数量，并编辑目录说明 readme.txt",
-        "header_note": "只按扩展名统计，不读取媒体内容；选择目录后可查看并修改其 readme.txt。",
+        "header_subtitle": "统计文件夹内图片、视频数量",
         "language": "界面语言",
         "root_dir": "根目录",
         "root_placeholder": "选择、粘贴或拖入相册根目录",
@@ -122,9 +122,6 @@ TRANSLATIONS = {
         "summary_none": "尚未选择根目录",
         "readme_title": "目录说明 readme.txt",
         "readme_path_none": "未选择目录",
-        "save_readme": "保存",
-        "reload_readme": "重新加载",
-        "readme_placeholder": "此目录没有 readme.txt",
         "status_waiting_root": "等待选择根目录",
         "status_scanning": "正在扫描目录…",
         "status_scan_done": "扫描完成：共 {folders} 个目录，{total} 项媒体",
@@ -132,23 +129,14 @@ TRANSLATIONS = {
         "status_scan_stopped": "扫描已停止，结果不完整（已发现 {folders} 个目录）",
         "status_stopping": "正在停止扫描…",
         "status_invalid_root": "根目录不存在或不可访问",
-        "status_readme_loading": "正在读取说明文件…",
-        "status_readme_ready": "已加载说明文件（{encoding} 编码）",
-        "status_readme_missing": "此目录没有 readme.txt",
         "status_readme_too_large": "说明文件超过 {size} MiB 上限，无法编辑",
         "status_readme_error": "读取说明失败：{error}",
-        "status_readme_dirty": "有未保存的修改",
-        "status_readme_saving": "正在保存说明文件…",
-        "status_readme_saved": "说明文件已保存",
-        "status_readme_conflict": "说明文件已被外部修改，未覆盖磁盘内容：{error}",
         "status_readme_conflict_plain": "保存已中止，未覆盖磁盘内容：{error}",
         "status_readme_save_failed": "保存失败：{error}",
-        "status_readme_no_selection": "请先在目录树中选择一个目录",
-        "status_readme_busy": "正在读取或保存说明文件，请稍候",
-        "status_readme_empty_file": "说明文件为空，可直接编辑并保存",
         "status_scan_busy": "扫描进行中，请先停止或等待完成",
-        "draft_prompt": "“{action}”前需要处理当前草稿。",
-        "draft_save": "保存并继续",
+        "draft_prompt": "自动保存失败，请处理当前修改后再{action}。",
+        "draft_save_prompt": "自动保存失败，修改仍保留在编辑框中。",
+        "draft_save": "重试",
         "draft_discard": "放弃修改",
         "draft_cancel": "取消",
         "action_switch_folder": "切换目录",
@@ -157,7 +145,6 @@ TRANSLATIONS = {
         "action_close": "关闭窗口",
         "notice_invalid_root": "目录不可用",
         "notice_readme_failed": "说明读写失败",
-        "notice_saved": "已保存",
         "notice_stopped": "已请求停止扫描",
         "incomplete_mark": "不完整",
         "incomplete_tip": "该目录包含无法访问的子目录，计数可能不完整",
@@ -165,8 +152,7 @@ TRANSLATIONS = {
     "en": {
         "app_title": "Media Statistics",
         "header_title": "Media Statistics",
-        "header_subtitle": "Count images and videos per folder, and edit each folder's readme.txt",
-        "header_note": "Counts are extension based only; media content is never read. Select a folder to view and edit its readme.txt.",
+        "header_subtitle": "Count images and videos in folders",
         "language": "Language",
         "root_dir": "Root folder",
         "root_placeholder": "Choose, paste or drop an album root folder",
@@ -185,9 +171,6 @@ TRANSLATIONS = {
         "summary_none": "No root folder selected",
         "readme_title": "Folder readme.txt",
         "readme_path_none": "No folder selected",
-        "save_readme": "Save",
-        "reload_readme": "Reload",
-        "readme_placeholder": "This folder has no readme.txt",
         "status_waiting_root": "Waiting for a root folder",
         "status_scanning": "Scanning folders…",
         "status_scan_done": "Scan finished: {folders} folders, {total} media items",
@@ -195,23 +178,14 @@ TRANSLATIONS = {
         "status_scan_stopped": "Scan stopped, results are incomplete ({folders} folders found)",
         "status_stopping": "Stopping scan…",
         "status_invalid_root": "Root folder is missing or inaccessible",
-        "status_readme_loading": "Loading readme.txt…",
-        "status_readme_ready": "readme.txt loaded ({encoding})",
-        "status_readme_missing": "This folder has no readme.txt",
         "status_readme_too_large": "readme.txt exceeds the {size} MiB limit and cannot be edited",
         "status_readme_error": "Failed to load readme.txt: {error}",
-        "status_readme_dirty": "Unsaved changes",
-        "status_readme_saving": "Saving readme.txt…",
-        "status_readme_saved": "readme.txt saved",
-        "status_readme_conflict": "readme.txt was modified externally; disk content was not overwritten: {error}",
         "status_readme_conflict_plain": "Save aborted; disk content was not overwritten: {error}",
         "status_readme_save_failed": "Save failed: {error}",
-        "status_readme_no_selection": "Select a folder in the tree first",
-        "status_readme_busy": "Loading or saving readme.txt, please wait",
-        "status_readme_empty_file": "readme.txt is empty; you can edit and save it",
         "status_scan_busy": "A scan is running; stop it or wait for it to finish",
-        "draft_prompt": "The current draft must be handled before “{action}”.",
-        "draft_save": "Save and continue",
+        "draft_prompt": "Autosave failed. Resolve the draft before {action}.",
+        "draft_save_prompt": "Autosave failed. Your changes remain in the editor.",
+        "draft_save": "Retry",
         "draft_discard": "Discard",
         "draft_cancel": "Cancel",
         "action_switch_folder": "switching folder",
@@ -220,7 +194,6 @@ TRANSLATIONS = {
         "action_close": "closing the window",
         "notice_invalid_root": "Folder unavailable",
         "notice_readme_failed": "Readme operation failed",
-        "notice_saved": "Saved",
         "notice_stopped": "Stop requested",
         "incomplete_mark": "Incomplete",
         "incomplete_tip": "This folder contains unavailable subfolders; counts may be incomplete",
@@ -454,9 +427,12 @@ class MainWindow(FramelessMainWindow):
         self._suspend_editor_signal = False
         self._readme_status_key = ""
         self._readme_status_kwargs: dict = {}
-        #: 保存是否刚成功（续动作延迟到线程退出后执行）
-        self._readme_save_succeeded = False
-        self._readme_success_callback = None
+        self._autosave_failed = False
+        self._autosave_requested = False
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(800)
+        self._autosave_timer.timeout.connect(self._flush_readme)
 
         # ---- 草稿守卫生成/关闭状态 ----
         self._pending_action: tuple[str, object, str] | None = None
@@ -481,13 +457,13 @@ class MainWindow(FramelessMainWindow):
         root = QWidget(self)
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(20, (0 if self._embedded else self._title_bar_height) + 12, 20, 18)
-        outer.setSpacing(12)
+        outer.setContentsMargins(20, (0 if self._embedded else self._title_bar_height) + 8, 20, 12)
+        outer.setSpacing(8)
 
         # ---- 标题区 ----
         header_card = QWidget(self)
         header_layout = QVBoxLayout(header_card)
-        header_layout.setContentsMargins(4, 6, 4, 10)
+        header_layout.setContentsMargins(4, 0, 4, 2)
         header_layout.setSpacing(4)
 
         self.title_label = SubtitleLabel(self.tr("header_title"), self)
@@ -497,9 +473,6 @@ class MainWindow(FramelessMainWindow):
         self.subtitle_label = BodyLabel(self.tr("header_subtitle"), self)
         self.subtitle_label.setStyleSheet("color: #667085;")
         self.subtitle_label.setWordWrap(True)
-        self.subtitle_note_label = BodyLabel(self.tr("header_note"), self)
-        self.subtitle_note_label.setStyleSheet("color: #98A2B3;")
-        self.subtitle_note_label.setWordWrap(True)
 
         self.language_label = BodyLabel(self.tr("language"), self)
         self.language_combo = ComboBox(self)
@@ -507,23 +480,24 @@ class MainWindow(FramelessMainWindow):
         self.language_combo.addItem("English", userData="en")
         self.language_combo.setFixedWidth(128)
         self.language_combo.currentIndexChanged.connect(self._on_language_changed)
-        language_row = QHBoxLayout()
-        language_row.addStretch(1)
-        language_row.addWidget(self.language_label)
-        language_row.addWidget(self.language_combo)
-
-        header_layout.addWidget(self.title_label)
+        title_row = QHBoxLayout()
+        title_row.addWidget(self.title_label)
+        title_row.addStretch(1)
+        if not self._embedded:
+            title_row.addWidget(self.language_label)
+            title_row.addWidget(self.language_combo)
+        else:
+            self.language_label.hide()
+            self.language_combo.hide()
+        header_layout.addLayout(title_row)
         header_layout.addWidget(self.subtitle_label)
-        header_layout.addWidget(self.subtitle_note_label)
         # 管理员权限拖拽提示：内嵌在标题下方，非 elevated 时零占位
         self.elevation_hint = attach_elevation_hint(header_layout, self, lang=self.lang)
-        if not self._embedded:
-            header_layout.addLayout(language_row)
 
         # ---- 根目录选择 ----
         path_card = CardWidget(self)
         path_layout = QHBoxLayout(path_card)
-        path_layout.setContentsMargins(16, 14, 16, 14)
+        path_layout.setContentsMargins(14, 8, 14, 8)
         path_layout.setSpacing(10)
         self.root_label = BodyLabel(self.tr("root_dir"), self)
         self.root_edit = LineEdit(self)
@@ -544,7 +518,7 @@ class MainWindow(FramelessMainWindow):
         tree_card = CardWidget(self)
         tree_layout = QVBoxLayout(tree_card)
         tree_layout.setContentsMargins(10, 10, 10, 10)
-        tree_layout.setSpacing(8)
+        tree_layout.setSpacing(6)
 
         tree_header_row = QHBoxLayout()
         tree_header_row.setSpacing(8)
@@ -552,12 +526,12 @@ class MainWindow(FramelessMainWindow):
         self.tree_title_label.setStyleSheet("font-weight: 600;")
         self.drop_hint = BodyLabel(self.tr("drop_hint"), tree_card)
         self.drop_hint.setStyleSheet("color: #6b7280; padding: 4px 6px;")
-        self.summary_label = BodyLabel(self.tr("summary_none"), tree_card)
+        self.summary_label = _ElidedLabel(tree_card, text=self.tr("summary_none"))
         self.summary_label.setStyleSheet("color: #667085;")
+        self.summary_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         tree_header_row.addWidget(self.tree_title_label)
         tree_header_row.addWidget(self.drop_hint)
-        tree_header_row.addStretch(1)
-        tree_header_row.addWidget(self.summary_label)
+        tree_header_row.addWidget(self.summary_label, 1)
 
         tree_button_row = QHBoxLayout()
         tree_button_row.setSpacing(8)
@@ -615,8 +589,8 @@ class MainWindow(FramelessMainWindow):
         # ---- 说明编辑区 ----
         readme_card = CardWidget(self)
         readme_layout = QVBoxLayout(readme_card)
-        readme_layout.setContentsMargins(14, 12, 14, 12)
-        readme_layout.setSpacing(8)
+        readme_layout.setContentsMargins(14, 8, 14, 8)
+        readme_layout.setSpacing(6)
 
         readme_header_row = QHBoxLayout()
         readme_header_row.setSpacing(8)
@@ -628,26 +602,14 @@ class MainWindow(FramelessMainWindow):
         readme_header_row.addWidget(self.readme_title_label)
         readme_header_row.addWidget(self.readme_path_label, 1)
 
-        readme_button_row = QHBoxLayout()
-        readme_button_row.setSpacing(8)
         self.readme_status_label = BodyLabel("", readme_card)
         self.readme_status_label.setStyleSheet("color: #475467;")
         self.readme_status_label.setWordWrap(True)
         self.readme_status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.readme_status_label.setMinimumWidth(0)
-        self.btn_reload = PushButton(self.tr("reload_readme"), readme_card)
-        self.btn_reload.setIcon(_pick_icon("SYNC", "UPDATE"))
-        self.btn_reload.clicked.connect(self.reload_readme)
-        self.btn_save = PrimaryPushButton(self.tr("save_readme"), readme_card)
-        self.btn_save.setIcon(_pick_icon("SAVE", "ACCEPT"))
-        # clicked 会传 checked=False，不能直接绑到带 on_success 参数的 save_readme
-        self.btn_save.clicked.connect(lambda _checked=False: self.save_readme())
-        self.btn_save.setEnabled(False)
-        readme_button_row.addWidget(self.readme_status_label, 1)
-        readme_button_row.addWidget(self.btn_reload)
-        readme_button_row.addWidget(self.btn_save)
+        self.readme_status_label.hide()
 
-        # 草稿决策条（保存 / 放弃 / 取消），按需显示，不用阻塞弹窗
+        # 仅保存失败时显示重试 / 放弃 / 取消，不占正常编辑高度
         self.draft_bar = CardWidget(readme_card)
         draft_layout = QHBoxLayout(self.draft_bar)
         draft_layout.setContentsMargins(12, 8, 12, 8)
@@ -670,42 +632,29 @@ class MainWindow(FramelessMainWindow):
         self.draft_bar.setVisible(False)
 
         self.readme_edit = PlainTextEdit(readme_card)
-        self.readme_edit.setPlaceholderText(self.tr("readme_placeholder"))
         self.readme_edit.setReadOnly(True)
-        self.readme_edit.setMinimumHeight(120)
+        self.readme_edit.setMinimumHeight(72)
+        self.readme_edit.installEventFilter(self)
         self.readme_edit.textChanged.connect(self._on_editor_text_changed)
 
         readme_layout.addLayout(readme_header_row)
         readme_layout.addWidget(self.readme_edit, 1)
-        readme_layout.addLayout(readme_button_row)
+        readme_layout.addWidget(self.readme_status_label)
         readme_layout.addWidget(self.draft_bar)
 
         self.splitter.addWidget(tree_card)
         self.splitter.addWidget(readme_card)
-        self.splitter.setStretchFactor(0, 3)
-        self.splitter.setStretchFactor(1, 2)
-
-        # ---- 状态栏 ----
-        foot_card = CardWidget(self)
-        foot_layout = QHBoxLayout(foot_card)
-        foot_layout.setContentsMargins(16, 10, 16, 10)
-        foot_layout.setSpacing(10)
-        self.status = BodyLabel(self.tr("status_waiting_root"), foot_card)
-        self.status.setStyleSheet("color: #475467;")
-        self.status.setWordWrap(True)
-        self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.status.setMinimumWidth(0)
-        foot_layout.addWidget(self.status, 1)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
+        self.splitter.setSizes([600, 124])
 
         outer.addWidget(header_card)
         outer.addWidget(path_card)
         outer.addWidget(self.splitter, 1)
-        outer.addWidget(foot_card)
 
         # 最小尺寸按实际内容估算（避免固定像素导致 680 高被抬到 715 而溢出屏）
         self.setMinimumHeight(560)
         self.setMinimumWidth(720)
-        self.readme_edit.setMinimumHeight(90)
 
     def _set_blue_title_bar(self):
         """独立运行时使用与其它页一致的自绘标题栏。"""
@@ -743,12 +692,13 @@ class MainWindow(FramelessMainWindow):
     def _set_status_text(self, key: str, **kwargs):
         self._last_status_key = key
         self._last_status_kwargs = kwargs
-        self.status.setText(self.tr(key, **kwargs))
+        self._refresh_summary()
 
     def _set_readme_status(self, key: str, **kwargs):
         self._readme_status_key = key
         self._readme_status_kwargs = kwargs
-        self.readme_status_label.setText(self.tr(key, **kwargs))
+        self.readme_status_label.setText(self.tr(key, **kwargs) if key else "")
+        self.readme_status_label.setVisible(bool(key))
 
     def _on_language_changed(self, _index: int):
         lang = self.language_combo.currentData()
@@ -762,7 +712,6 @@ class MainWindow(FramelessMainWindow):
         self.setWindowTitle(self.tr("app_title"))
         self.title_label.setText(self.tr("header_title"))
         self.subtitle_label.setText(self.tr("header_subtitle"))
-        self.subtitle_note_label.setText(self.tr("header_note"))
         self.elevation_hint.set_language(self.lang)
         self.language_label.setText(self.tr("language"))
         self.root_label.setText(self.tr("root_dir"))
@@ -776,9 +725,6 @@ class MainWindow(FramelessMainWindow):
         self.btn_scan.setText(self.tr("rescan"))
         self.btn_stop.setText(self.tr("stop_scan"))
         self.readme_title_label.setText(self.tr("readme_title"))
-        self.btn_save.setText(self.tr("save_readme"))
-        self.btn_reload.setText(self.tr("reload_readme"))
-        self.readme_edit.setPlaceholderText(self.tr("readme_placeholder"))
         self.btn_draft_save.setText(self.tr("draft_save"))
         self.btn_draft_discard.setText(self.tr("draft_discard"))
         self.btn_draft_cancel.setText(self.tr("draft_cancel"))
@@ -807,30 +753,37 @@ class MainWindow(FramelessMainWindow):
 
     def _refresh_summary(self):
         outcome = self._last_outcome
-        if outcome is None or not outcome.folders:
-            self.summary_label.setText(self.tr("summary_none"))
-            return
-        root_snapshot = outcome.folders[0]
-        self.summary_label.setText(
-            self.tr(
+        summary = self.tr("summary_none")
+        if outcome is not None and outcome.folders:
+            root_snapshot = outcome.folders[0]
+            summary = self.tr(
                 "summary",
                 total=root_snapshot.total,
                 image=root_snapshot.image_count,
                 video=root_snapshot.video_count,
             )
-        )
+        key = self._last_status_key
+        status = self.tr(key, **self._last_status_kwargs)
+        if key in ("status_scan_partial", "status_scan_stopped"):
+            summary = f"{summary} · {self.tr('incomplete_mark')}" if outcome else status
+        elif key not in ("status_waiting_root", "status_scan_done"):
+            summary = status
+        self.summary_label.setText(summary)
+        self.summary_label.setToolTip(f"{summary}\n{status}" if summary != status else summary)
 
     def _refresh_draft_bar(self):
-        if self._pending_action is None or self._is_io_busy():
+        if (
+            self._pending_action is None
+            or self._pending_action[2] != "draft"
+            or self._is_io_busy()
+        ):
             self.draft_bar.setVisible(False)
             return
         action_key, _action, _kind = self._pending_action
-        self.draft_label.setText(
-            self.tr(
-                "draft_prompt",
-                action=self.tr(action_key),
-            )
+        text = self.tr("draft_save_prompt") if action_key == "action_save" else self.tr(
+            "draft_prompt", action=self.tr(action_key)
         )
+        self.draft_label.setText(text)
         self.draft_bar.setVisible(True)
 
     # ------------------------------------------------------------------
@@ -903,6 +856,8 @@ class MainWindow(FramelessMainWindow):
     # ------------------------------------------------------------------
 
     def eventFilter(self, obj, event):
+        if obj is getattr(self, "readme_edit", None) and event.type() == QEvent.Type.FocusOut:
+            self._flush_readme()
         if obj is self.tree.viewport():
             if event.type() in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
                 if event.mimeData().hasUrls():
@@ -976,11 +931,13 @@ class MainWindow(FramelessMainWindow):
         self.readme_document = None
         self._readme_dirty = False
         self._readme_busy = False
+        self._autosave_timer.stop()
+        self._autosave_requested = False
+        self._autosave_failed = False
         self._set_editor_text("")
         self.readme_edit.setReadOnly(True)
-        self.btn_save.setEnabled(False)
         self.readme_path_label.setText(self.tr("readme_path_none"))
-        self._set_readme_status("status_readme_no_selection")
+        self._set_readme_status("")
 
     # ------------------------------------------------------------------
     # 扫描
@@ -1362,14 +1319,17 @@ class MainWindow(FramelessMainWindow):
 
     def _select_folder(self, folder: Path):
         """切换说明区到指定目录（旧结果按 request_id 丢弃）。"""
+        self._autosave_timer.stop()
+        self._autosave_requested = False
+        self._autosave_failed = False
         self._readme_directory = folder
         self.readme_document = None
         self._readme_dirty = False
         self._set_editor_text("")
         self.readme_edit.setReadOnly(True)
-        self.btn_save.setEnabled(False)
+        self._restore_tree_selection()
         self.readme_path_label.setText(str(folder / "readme.txt"))
-        self._set_readme_status("status_readme_loading")
+        self._set_readme_status("")
         self._request_readme_load(folder)
 
     # ------------------------------------------------------------------
@@ -1387,8 +1347,6 @@ class MainWindow(FramelessMainWindow):
 
     def _start_readme_load(self, request_id: int, folder: Path):
         self._readme_busy = True
-        self.btn_reload.setEnabled(False)
-        self.btn_save.setEnabled(False)
         thread = QThread(self)
         worker = ReadmeLoadWorker(request_id, folder)
         self._readme_thread = thread
@@ -1421,8 +1379,6 @@ class MainWindow(FramelessMainWindow):
             (t, w) for (t, w) in self._retired_readme_jobs if _thread_is_running(t)
         ]
         self._readme_busy = False
-        self.btn_reload.setEnabled(True)
-        self._refresh_save_button()
         # 注意：只有旧线程已退出，才允许发起新的 IO
         pending = self._readme_pending_load
         if pending is not None:
@@ -1431,49 +1387,29 @@ class MainWindow(FramelessMainWindow):
             if request_id == self._readme_request_id:
                 self._start_readme_load(request_id, folder)
                 return
-        # 保存成功且当时有续动作：旧线程已退出，现在才执行（可发新 IO）
-        if self._readme_save_succeeded:
-            self._readme_save_succeeded = False
-            callback = self._readme_success_callback
-            self._readme_success_callback = None
-            if callback is not None:
-                try:
-                    callback()
-                except Exception:
-                    pass
         self._maybe_continue_pending_action()
         self._maybe_finish_close()
-
-    def _refresh_save_button(self):
-        # 注意：关闭流程中也要允许保存（草稿决策条的“保存并继续”依赖它）
-        can_save = self.readme_document is not None and self._readme_dirty and not self._readme_busy
-        self.btn_save.setEnabled(bool(can_save))
 
     def _on_readme_loaded(self, request_id: int, result):
         if request_id != self._readme_request_id:
             return  # 过期结果，丢弃
         status = getattr(result, "status", STATUS_ERROR)
         error = getattr(result, "error", "") or ""
-        if status == STATUS_READY and getattr(result, "document", None) is not None:
+        if status in (STATUS_READY, STATUS_MISSING) and getattr(result, "document", None) is not None:
             document = result.document
             self.readme_document = document
             self._readme_dirty = False
             self._set_editor_text(document.text)
             self.readme_edit.setReadOnly(False)
             self.readme_path_label.setText(str(document.path))
-            if document.text:
-                self._set_readme_status("status_readme_ready", encoding=document.encoding)
-            else:
-                self._set_readme_status("status_readme_empty_file")
+            self._set_readme_status("")
         else:
-            # 没有说明、超限或读取失败：清空并禁用编辑（不留上次内容）
+            # 只有核心确认的真正缺失才可编辑；读取失败不能当作新空白
             self.readme_document = None
             self._readme_dirty = False
             self._set_editor_text("")
             self.readme_edit.setReadOnly(True)
-            if status == STATUS_MISSING:
-                self._set_readme_status("status_readme_missing")
-            elif status == STATUS_TOO_LARGE:
+            if status == STATUS_TOO_LARGE:
                 self._set_readme_status(
                     "status_readme_too_large", size=MAX_README_BYTES // (1024 * 1024)
                 )
@@ -1483,7 +1419,6 @@ class MainWindow(FramelessMainWindow):
             self.readme_path_label.setText(
                 str(getattr(result, "path", None) or (self._readme_directory or Path("")) / "readme.txt")
             )
-        self._refresh_save_button()
         self._maybe_continue_pending_action()
 
     def _on_readme_load_failed(self, request_id: int, message: str):
@@ -1495,36 +1430,7 @@ class MainWindow(FramelessMainWindow):
         self.readme_edit.setReadOnly(True)
         self._set_readme_status("status_readme_error", error=message)
         self._notify(self.tr("notice_readme_failed"), message, is_error=True)
-        self._refresh_save_button()
         self._maybe_continue_pending_action()
-
-    def reload_readme(self):
-        """从磁盘重新加载当前目录说明（有草稿时先走草稿守卫）。"""
-        if self._readme_directory is None:
-            current = self._current_tree_folder()
-            if current is None:
-                self._set_readme_status("status_readme_no_selection")
-                return
-            self._select_folder(current)
-            return
-        if self._readme_busy:
-            self._set_readme_status("status_readme_busy")
-            return
-
-        folder = self._readme_directory
-
-        def apply():
-            self._reset_before_reload(folder)
-
-        self._run_with_draft_guard("action_switch_folder", apply)
-
-    def _reset_before_reload(self, folder: Path):
-        self.readme_document = None
-        self._readme_dirty = False
-        self._set_editor_text("")
-        self.readme_edit.setReadOnly(True)
-        self._set_readme_status("status_readme_loading")
-        self._request_readme_load(folder)
 
     # ------------------------------------------------------------------
     # 说明文件：保存
@@ -1535,11 +1441,32 @@ class MainWindow(FramelessMainWindow):
             return
         if self.readme_document is None:
             return
-        dirty = self.readme_edit.toPlainText() != self.readme_document.text
-        self._readme_dirty = dirty
-        self._refresh_save_button()
-        if dirty:
-            self._set_readme_status("status_readme_dirty")
+        self._readme_dirty = self.readme_edit.toPlainText() != self.readme_document.text
+        if (
+            self._autosave_failed
+            and self._pending_action is not None
+            and self._pending_action[0] == "action_close"
+        ):
+            # 关闭失败后继续编辑表示留在窗口；只有显式重试/放弃才续关
+            self._pending_action = None
+            self._cancel_close_intent()
+            self._refresh_draft_bar()
+        self._autosave_failed = False
+        self._set_readme_status("")
+        if self._pending_action is not None:
+            action_key, action, _kind = self._pending_action
+            self._pending_action = (action_key, action, "io")
+            self._refresh_draft_bar()
+            # 已请求离开目录时，必须继续写完最新草稿再执行动作
+            if action_key != "action_save":
+                self._flush_readme()
+                return
+        # 保存进行中即使撤回旧基线，也要在新基线返回后重新比较
+        if self._readme_dirty or self._is_io_busy():
+            self._autosave_timer.start()
+        else:
+            self._autosave_timer.stop()
+            self._maybe_continue_pending_action()
 
     def _set_editor_text(self, text: str):
         self._suspend_editor_signal = True
@@ -1548,33 +1475,25 @@ class MainWindow(FramelessMainWindow):
         finally:
             self._suspend_editor_signal = False
 
-    def save_readme(self, on_success=None) -> bool:
-        """保存当前说明；返回是否已发起保存请求。
+    def _flush_readme(self):
+        """停止防抖并请求写入；IO 未清理时仅记下待办，失败后等编辑或重试。"""
+        self._autosave_timer.stop()
+        if self._autosave_failed or self.readme_document is None:
+            return
+        self._autosave_requested = True
+        self._maybe_continue_pending_action()
 
-        on_success 在保存成功后调用（用于草稿守卫继续原操作）。
-        """
-        if self._readme_busy:
-            self._set_readme_status("status_readme_busy")
+    def save_readme(self) -> bool:
+        """冻结路径/基线/文本启动一次保存，始终保持编辑器可输入。"""
+        if self._is_io_busy() or self.readme_document is None or not self._readme_dirty:
             return False
-        if self.readme_document is None or self._readme_directory is None:
-            self._set_readme_status("status_readme_no_selection")
-            return False
-        if not self._readme_dirty:
-            if on_success is not None:
-                on_success()
-            return True
-
         text = self.readme_edit.toPlainText()
         document = self.readme_document
+        self._autosave_requested = False
         self._readme_busy = True
         self._readme_request_id += 1
         request_id = self._readme_request_id
-        # 保存成功后的续动作延迟到线程 finished 后再执行，避免旧 cleanup 清洗新引用
-        self._readme_success_callback = on_success
-        self.readme_edit.setReadOnly(True)
-        self.btn_save.setEnabled(False)
-        self.btn_reload.setEnabled(False)
-        self._set_readme_status("status_readme_saving")
+        self._refresh_draft_bar()
 
         thread = QThread(self)
         worker = ReadmeSaveWorker(request_id, document, text)
@@ -1599,57 +1518,48 @@ class MainWindow(FramelessMainWindow):
         error = getattr(result, "error", "") or ""
         if status == STATUS_SAVED and getattr(result, "document", None) is not None:
             self.readme_document = result.document
-            self._readme_dirty = False
-            # 保存成功：成功续动作留到 _on_readme_thread_finished 执行（不提前发起新 IO）
-            self._readme_save_succeeded = True
-            self.readme_edit.setReadOnly(False)
-            self._set_readme_status("status_readme_saved")
-            self._notify(self.tr("notice_saved"), self.tr("status_readme_saved"))
+            # 只更新保存基线；当前文本可能比 worker 的快照更新，绝不覆盖它
+            self._readme_dirty = self.readme_edit.toPlainText() != result.document.text
+            self._autosave_failed = False
+            self._set_readme_status("")
+            if self._readme_dirty and not self._autosave_timer.isActive():
+                self._autosave_requested = True
             return
-
-        # 失败/冲突：保留草稿与原文件，恢复编辑
-        self._readme_success_callback = None
-        self._cancel_close_intent()
-        self.readme_edit.setReadOnly(False)
-        if status == STATUS_CONFLICT:
-            # 核心层错误文本已含“已被外部修改”语义，不再重复拼接前缀
-            self._set_readme_status("status_readme_conflict_plain", error=error)
-        else:
-            self._set_readme_status("status_readme_save_failed", error=error)
-        self._notify(self.tr("notice_readme_failed"), error, is_error=True)
-        self._readme_dirty = True
-        self._refresh_save_button()
+        key = "status_readme_conflict_plain" if status == STATUS_CONFLICT else "status_readme_save_failed"
+        self._mark_readme_save_failed(key, error)
 
     def _on_readme_save_failed(self, request_id: int, message: str):
         if request_id != self._readme_request_id:
             return
-        self._readme_success_callback = None
-        self._readme_save_succeeded = False
-        self._cancel_close_intent()
-        self.readme_edit.setReadOnly(False)
-        self._readme_dirty = True
-        self._set_readme_status("status_readme_save_failed", error=message)
-        self._notify(self.tr("notice_readme_failed"), message, is_error=True)
-        self._refresh_save_button()
+        self._mark_readme_save_failed("status_readme_save_failed", message)
+
+    def _mark_readme_save_failed(self, key: str, message: str):
+        """失败不改变草稿和目录，也不自动循环重试或继续关闭。"""
+        self._autosave_timer.stop()
+        self._autosave_requested = False
+        self._autosave_failed = True
+        self._readme_dirty = self.readme_edit.toPlainText() != self.readme_document.text
+        self._set_readme_status(key, error=message)
+        if self._pending_action is None:
+            self._pending_action = ("action_save", self._noop_action, "draft")
+        else:
+            action_key, action, _kind = self._pending_action
+            self._pending_action = (action_key, action, "draft")
+        self._restore_tree_selection()
 
     # ------------------------------------------------------------------
-    # 草稿守卫：保存 / 放弃 / 取消
+    # 草稿守卫：自动保存，失败时重试 / 放弃 / 取消
     # ------------------------------------------------------------------
 
     def _run_with_draft_guard(self, action_key: str, action):
-        """有未保存草稿时先征求用户决定，否则直接执行 action。
-
-        IO 进行中不弹决策（避免在保存/读取途中要求放弃/保存）：
-        先暂缓动作，等线程真正退出后再重新评估 dirty。
-        """
-        if self._readme_busy or self._readme_thread is not None:
-            self._pending_action = (action_key, action, "io")
-            return
-        if self._readme_dirty and self.readme_document is not None:
-            self._pending_action = (action_key, action, "draft")
-            self._refresh_draft_bar()
-            return
-        action()
+        """离开当前目录前自动写完最新草稿，仅失败才显示异常决策。"""
+        if self._close_intent and action_key != "action_close":
+            self._cancel_close_intent()
+        self._pending_action = (action_key, action, "io")
+        self._autosave_timer.stop()
+        self._autosave_requested = True
+        self._restore_tree_selection()
+        self._maybe_continue_pending_action()
 
     def _is_io_busy(self) -> bool:
         """说明读写是否仍在进行（线程引用未清即视为未完成）。"""
@@ -1662,14 +1572,10 @@ class MainWindow(FramelessMainWindow):
         action_key, action, _kind = pending
         # IO 进行中不允许决策（保存/读取未返回时放弃会把草稿写错）
         if self._is_io_busy():
-            self._set_readme_status("status_readme_busy")
             return
         if choice == "cancel":
             self._pending_action = None
-            self._closing = False
-            # 取消关闭：撤销关闭意图，不执行 on_ready
-            self._close_intent = False
-            self._close_callbacks.clear()
+            self._cancel_close_intent()
             self._refresh_draft_bar()
             # 取消：恢复树选择到当前说明目录
             self._restore_tree_selection()
@@ -1677,27 +1583,29 @@ class MainWindow(FramelessMainWindow):
 
         if choice == "discard":
             self._pending_action = None
+            self._autosave_timer.stop()
+            self._autosave_requested = False
+            self._autosave_failed = False
             self._refresh_draft_bar()
+            self._set_editor_text(self.readme_document.text if self.readme_document else "")
             self._readme_dirty = False
-            self._refresh_save_button()
-            action()
+            self._set_readme_status("")
+            if action_key in ("action_save", "action_scan") and self._readme_directory is not None:
+                # 留在当前目录（含重扫）时重新读取，避免继续用外部变更前的基线
+                self._select_folder(self._readme_directory)
+            if action_key != "action_save":
+                action()
             # 关闭流程：草稿已放弃，继续等待后台清理并回调 on_ready
             self._maybe_finish_close()
             return
 
-        # save：保存成功后继续原操作；失败保留草稿与选中
-        self._pending_action = None
+        # 重试继续保持原动作，直到所有较新的文本也已成功保存
+        self._autosave_failed = False
+        self._pending_action = (action_key, action, "io")
+        self._autosave_requested = True
+        self._set_readme_status("")
         self._refresh_draft_bar()
-        del action_key
-
-        def after_save():
-            action()
-            self._maybe_finish_close()
-
-        started = self.save_readme(on_success=after_save)
-        if not started:
-            # 保存没能发起（无文档/忙）：保持安全行为，不执行动作
-            self._set_readme_status("status_readme_no_selection")
+        self._maybe_continue_pending_action()
 
     def _restore_tree_selection(self):
         """把树选择恢复到当前说明目录，避免选择与编辑区不一致。"""
@@ -1731,22 +1639,27 @@ class MainWindow(FramelessMainWindow):
         return Path(str(text)) if text else None
 
     def _maybe_continue_pending_action(self):
-        """IO 结束后重新评估被暂缓的动作（脏草稿 → 弹决策条；否则直接执行）。"""
+        """只在旧线程清理后启动下一次保存或执行待办动作。"""
         pending = self._pending_action
-        if pending is None:
-            return
         if self._is_io_busy():
             return
-        action_key, action, _kind = pending
-        if self._readme_dirty and self.readme_document is not None:
-            # 重新评估后确实有草稿：转为等待用户决策
-            self._pending_action = (action_key, action, "draft")
+        # 失败与 dirty 独立：旧快照失败时用户可能已撤回基线，仍须明确处理
+        if self._autosave_failed:
+            if pending is not None:
+                self._pending_action = (pending[0], pending[1], "draft")
             self._refresh_draft_bar()
             return
+        if self._readme_dirty and self.readme_document is not None:
+            if self._autosave_requested or (pending is not None and pending[0] != "action_save"):
+                self.save_readme()
+            return
+        self._autosave_requested = False
+        if pending is None:
+            return
+        _action_key, action, _kind = pending
         self._pending_action = None
         self._refresh_draft_bar()
-        if action_key != "action_close":
-            action()
+        action()
         self._maybe_finish_close()
 
     # ------------------------------------------------------------------
@@ -1772,40 +1685,31 @@ class MainWindow(FramelessMainWindow):
         返回 True：当前可以安全退出，调用方直接接受关闭。
         返回 False：已接管关闭流程，最终会调用 on_ready（可能延迟到后台清理完成）。
         """
+        self._autosave_timer.stop()
+        if not self._readme_dirty and not self._has_background_work() and not self._autosave_failed:
+            self._pending_action = None
+            self._cancel_close_intent()
+            return True
+
         if on_ready is not None and on_ready not in self._close_callbacks:
             self._close_callbacks.append(on_ready)
-
-        # 1) 有未保存草稿：显示内嵌决策条，等待用户选择
-        #    重复调用不复位已存在的决策（幂等：不会重复弹出或开始重复保存）
-        if self._readme_dirty and self.readme_document is not None:
-            self._closing = True
-            self._close_intent = True
-            if self._pending_action is None or self._pending_action[0] != "action_close":
-                self._pending_action = ("action_close", self._noop_action, "draft")
-            self._refresh_draft_bar()
-            return False
-
-        # 2) 有后台任务：请求停止并等待清理完成后回调
-        if self._has_background_work():
-            self._closing = True
-            self._close_intent = True
-            if self._scan_stop_event is not None:
-                self._scan_stop_event.set()
-            self._readme_pending_load = None
-            return False
-
-        # 3) 无事可做：可以直接关闭
-        self._closing = False
-        self._close_intent = False
-        self._close_callbacks.clear()
-        return True
+        self._closing = True
+        self._close_intent = True
+        if self._scan_stop_event is not None:
+            self._scan_stop_event.set()
+        self._pending_scan_restart = False
+        self._readme_pending_load = None
+        self._pending_action = ("action_close", self._noop_action, "io")
+        self._autosave_requested = True
+        self._maybe_continue_pending_action()
+        return False
 
     def _noop_action(self):
         """关闭流程的占位动作：决策后由 _maybe_finish_close 统一回调。"""
         return None
 
     def _cancel_close_intent(self):
-        """保存失败/冲突时中止关闭流程：保留草稿与窗口，丢弃 on_ready 回调。"""
+        """用户取消离开当前目录时撤销关闭意图和回调。"""
         self._close_intent = False
         self._closing = False
         self._close_callbacks.clear()
@@ -1814,8 +1718,10 @@ class MainWindow(FramelessMainWindow):
         """后台清理结束（或草稿已解决）后，若仍有等待的关闭回调则执行。"""
         if not self._close_callbacks:
             return
-        # 关闭意图必须仍然有效（保存失败/冲突时会被清除，不得关闭）
+        # 关闭意图必须仍然有效，且失败的草稿决策已经明确解决
         if not self._close_intent:
+            return
+        if self._autosave_failed:
             return
         if self._readme_dirty and self.readme_document is not None:
             return

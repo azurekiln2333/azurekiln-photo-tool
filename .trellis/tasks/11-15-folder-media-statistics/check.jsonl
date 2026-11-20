@@ -1,4 +1,5 @@
 {"file":".trellis/spec/python/quality-guidelines.md","reason":"语法与核心回归验证，避免新增测试框架"}
+{"file":".trellis/tasks/11-15-folder-media-statistics/refinement.md","reason":"最新布局、自动保存、缺失创建与并发保护验收"}
 {"file":".trellis/spec/python/media-statistics.md","reason":"最终计数快照、云占位、说明安全写回和关闭接口契约"}
 {"file":".trellis/spec/python/error-handling.md","reason":"扫描不完整与说明失败不丢数据"}
 {"file":".trellis/spec/python/packaging.md","reason":"模块打包收集和隔离配置"}

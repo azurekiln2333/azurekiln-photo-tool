@@ -108,6 +108,7 @@ class _DirNode:
         "image_count",
         "video_count",
         "has_issue",
+        "direct_issue_count",
         "issue_count",
         "needs_emit",
     )
@@ -122,6 +123,7 @@ class _DirNode:
         self.image_count = 0
         self.video_count = 0
         self.has_issue = False  # 自身或后代已记录问题（不完整，且不可被覆盖）
+        self.direct_issue_count = 0
         self.issue_count = 0
         self.needs_emit = False  # 已排队待通知的更新快照
 
@@ -133,6 +135,7 @@ class _DirNode:
     def mark_issue(self) -> None:
         """记录一个问题：本目录不完整。"""
         self.has_issue = True
+        self.direct_issue_count += 1
         self.issue_count += 1
 
 
@@ -231,7 +234,8 @@ def _recount(node: _DirNode) -> None:
     """
     image_total = node.direct_image
     video_total = node.direct_video
-    issue_count = node.issue_count
+    # 反复汇总时只从直属问题开始，避免把上次已聚合的子目录问题再加一遍。
+    issue_count = node.direct_issue_count
     has_issue = node.has_issue
     for child in node.children:
         image_total += child.image_count

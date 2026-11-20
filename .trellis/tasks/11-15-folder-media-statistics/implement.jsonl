@@ -1,4 +1,5 @@
 {"file":".trellis/spec/python/index.md","reason":"核心模块边界与零新增依赖"}
+{"file":".trellis/tasks/11-15-folder-media-statistics/refinement.md","reason":"2026-11-16 用户授权的紧凑布局与自动保存创建说明修订，优先于基线行为"}
 {"file":".trellis/spec/python/project-structure.md","reason":"扁平模块和媒体格式共用层"}
 {"file":".trellis/spec/python/error-handling.md","reason":"读写错误显式状态和线程边界"}
 {"file":".trellis/spec/python/packaging.md","reason":"新模块打包与现有依赖"}
