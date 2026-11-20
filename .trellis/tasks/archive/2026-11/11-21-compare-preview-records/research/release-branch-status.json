@@ -1,0 +1,150 @@
+{
+  "checked_at": "2026-11-20T20:07:32.775314+00:00",
+  "run_id": 44808199635,
+  "jobs": [
+    {
+      "id": 136537622040,
+      "name": "build",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-11-20T20:05:43Z",
+      "completed_at": null,
+      "html_url": "https://github.com/azurekiln2333/azurekiln-photo-tool/actions/runs/44808199635/job/136537622040",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:05:44Z",
+          "completed_at": "2026-11-20T20:05:45Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:05:45Z",
+          "completed_at": "2026-11-20T20:05:52Z"
+        },
+        {
+          "name": "Set up Python",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:05:52Z",
+          "completed_at": "2026-11-20T20:06:00Z"
+        },
+        {
+          "name": "Install dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:06:00Z",
+          "completed_at": "2026-11-20T20:06:22Z"
+        },
+        {
+          "name": "Run unit tests (offscreen, isolated APPDATA)",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:06:22Z",
+          "completed_at": "2026-11-20T20:06:33Z"
+        },
+        {
+          "name": "Read and check version",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:06:33Z",
+          "completed_at": "2026-11-20T20:06:33Z"
+        },
+        {
+          "name": "Cache ExifTool",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:06:33Z",
+          "completed_at": "2026-11-20T20:06:34Z"
+        },
+        {
+          "name": "Download ExifTool",
+          "status": "completed",
+          "conclusion": "skipped",
+          "started_at": "2026-11-20T20:06:34Z",
+          "completed_at": "2026-11-20T20:06:34Z"
+        },
+        {
+          "name": "Configure ExifTool",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:06:34Z",
+          "completed_at": "2026-11-20T20:06:35Z"
+        },
+        {
+          "name": "Build onefile exe (PyInstaller)",
+          "status": "in_progress",
+          "conclusion": null,
+          "started_at": "2026-11-20T20:06:35Z",
+          "completed_at": null
+        },
+        {
+          "name": "Verify bundle contents",
+          "status": "pending",
+          "conclusion": null,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Package portable zip",
+          "status": "pending",
+          "conclusion": null,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Ensure Inno Setup",
+          "status": "pending",
+          "conclusion": null,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Build installer (Inno Setup)",
+          "status": "pending",
+          "conclusion": null,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Upload artifacts",
+          "status": "pending",
+          "conclusion": null,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Publish GitHub Release",
+          "status": "pending",
+          "conclusion": null,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Post Cache ExifTool",
+          "status": "pending",
+          "conclusion": null,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Post Set up Python",
+          "status": "pending",
+          "conclusion": null,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Post Checkout",
+          "status": "pending",
+          "conclusion": null,
+          "started_at": null,
+          "completed_at": null
+        }
+      ]
+    }
+  ]
+}

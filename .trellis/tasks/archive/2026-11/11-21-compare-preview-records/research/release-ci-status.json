@@ -1,0 +1,28 @@
+{
+  "checked_at": "2026-11-20T20:12:59.086945+00:00",
+  "commit": "a594841fe4a24c9b1b65fd76b0726e4aa9119470",
+  "runs": [
+    {
+      "id": 44808571694,
+      "name": "Build",
+      "head_branch": "v1.2.2",
+      "head_sha": "a594841fe4a24c9b1b65fd76b0726e4aa9119470",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/azurekiln2333/azurekiln-photo-tool/actions/runs/44808571694",
+      "created_at": "2026-11-20T20:08:04Z",
+      "updated_at": "2026-11-20T20:12:10Z"
+    },
+    {
+      "id": 44808199635,
+      "name": "Build",
+      "head_branch": "feat/folder-media-statistics",
+      "head_sha": "a594841fe4a24c9b1b65fd76b0726e4aa9119470",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/azurekiln2333/azurekiln-photo-tool/actions/runs/44808199635",
+      "created_at": "2026-11-20T20:05:40Z",
+      "updated_at": "2026-11-20T20:08:18Z"
+    }
+  ]
+}

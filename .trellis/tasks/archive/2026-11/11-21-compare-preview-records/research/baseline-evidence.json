@@ -1,0 +1,24 @@
+{
+  "baseline_core_tests": {
+    "command": ".venv/Scripts/python.exe -B -m unittest tests.test_duplicate_scan_core -q",
+    "tests": 81,
+    "result": "passed"
+  },
+  "version_target": "1.2.1",
+  "qt_bin": "D:\\MyNewProject\\LivePhotosSpilt\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\bin",
+  "qt_video_plugins": [
+    "ffmpegmediaplugin.dll",
+    "windowsmediaplugin.dll"
+  ],
+  "qt_codec_dlls": [
+    "avcodec-61.dll",
+    "avformat-61.dll",
+    "avutil-59.dll",
+    "swresample-5.dll",
+    "swscale-8.dll"
+  ],
+  "working_model_outage": "Pi newapi/deepseek-v4.1-flash repeated upstream HTTP 502; no product edits as of handoff",
+  "herdr_workspace": "w55",
+  "user_model_switch_question_pending": false,
+  "user_decision": "Keep current model and wait for upstream recovery"
+}

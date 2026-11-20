@@ -1,0 +1,157 @@
+{
+  "checked_at": "2026-11-20T20:13:49.720335+00:00",
+  "run_id": 44808571694,
+  "jobs": [
+    {
+      "id": 136538897224,
+      "name": "build",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-11-20T20:08:07Z",
+      "completed_at": "2026-11-20T20:12:10Z",
+      "html_url": "https://github.com/azurekiln2333/azurekiln-photo-tool/actions/runs/44808571694/job/136538897224",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:08:08Z",
+          "completed_at": "2026-11-20T20:08:10Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:08:10Z",
+          "completed_at": "2026-11-20T20:08:16Z"
+        },
+        {
+          "name": "Set up Python",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:08:16Z",
+          "completed_at": "2026-11-20T20:08:30Z"
+        },
+        {
+          "name": "Install dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:08:30Z",
+          "completed_at": "2026-11-20T20:09:04Z"
+        },
+        {
+          "name": "Run unit tests (offscreen, isolated APPDATA)",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:09:04Z",
+          "completed_at": "2026-11-20T20:09:15Z"
+        },
+        {
+          "name": "Read and check version",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:09:15Z",
+          "completed_at": "2026-11-20T20:09:15Z"
+        },
+        {
+          "name": "Cache ExifTool",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:09:15Z",
+          "completed_at": "2026-11-20T20:09:16Z"
+        },
+        {
+          "name": "Download ExifTool",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:09:16Z",
+          "completed_at": "2026-11-20T20:10:03Z"
+        },
+        {
+          "name": "Configure ExifTool",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:10:03Z",
+          "completed_at": "2026-11-20T20:10:04Z"
+        },
+        {
+          "name": "Build onefile exe (PyInstaller)",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:10:04Z",
+          "completed_at": "2026-11-20T20:11:20Z"
+        },
+        {
+          "name": "Verify bundle contents",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:11:20Z",
+          "completed_at": "2026-11-20T20:11:21Z"
+        },
+        {
+          "name": "Package portable zip",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:11:21Z",
+          "completed_at": "2026-11-20T20:11:23Z"
+        },
+        {
+          "name": "Ensure Inno Setup",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:11:23Z",
+          "completed_at": "2026-11-20T20:11:24Z"
+        },
+        {
+          "name": "Build installer (Inno Setup)",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:11:24Z",
+          "completed_at": "2026-11-20T20:11:43Z"
+        },
+        {
+          "name": "Upload artifacts",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:11:43Z",
+          "completed_at": "2026-11-20T20:11:49Z"
+        },
+        {
+          "name": "Publish GitHub Release",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:11:49Z",
+          "completed_at": "2026-11-20T20:11:59Z"
+        },
+        {
+          "name": "Post Cache ExifTool",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:11:59Z",
+          "completed_at": "2026-11-20T20:12:01Z"
+        },
+        {
+          "name": "Post Set up Python",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:12:01Z",
+          "completed_at": "2026-11-20T20:12:06Z"
+        },
+        {
+          "name": "Post Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:12:06Z",
+          "completed_at": "2026-11-20T20:12:08Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "started_at": "2026-11-20T20:12:08Z",
+          "completed_at": "2026-11-20T20:12:08Z"
+        }
+      ]
+    }
+  ]
+}

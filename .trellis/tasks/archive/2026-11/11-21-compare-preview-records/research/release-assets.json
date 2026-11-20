@@ -1,0 +1,38 @@
+{
+  "checked_at": "2026-11-20T20:13:48.567161+00:00",
+  "id": 453134507,
+  "tag_name": "v1.2.2",
+  "name": "AzureKiln Photo Tool v1.2.2",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-11-20T20:11:58Z",
+  "html_url": "https://github.com/azurekiln2333/azurekiln-photo-tool/releases/tag/v1.2.2",
+  "release_commit": "a594841fe4a24c9b1b65fd76b0726e4aa9119470",
+  "assets": [
+    {
+      "id": 773186682,
+      "name": "AzureKilnPhotoTool-1.2.2-20261120-windows-x64-portable.sha256.txt",
+      "size": 90,
+      "state": "uploaded",
+      "digest": "sha256:01387d5444f8c1baa5cab51c5c6900c2afe6686e835e236d6cb5c874baa16387",
+      "browser_download_url": "https://github.com/azurekiln2333/azurekiln-photo-tool/releases/download/v1.2.2/AzureKilnPhotoTool-1.2.2-20261120-windows-x64-portable.sha256.txt"
+    },
+    {
+      "id": 773186680,
+      "name": "AzureKilnPhotoTool-1.2.2-20261120-windows-x64-portable.zip",
+      "size": 84203502,
+      "state": "uploaded",
+      "digest": "sha256:68bc5b681503c18cb3e3451340a73a4f08f029ff19edf51f7a464fa720ed3d59",
+      "browser_download_url": "https://github.com/azurekiln2333/azurekiln-photo-tool/releases/download/v1.2.2/AzureKilnPhotoTool-1.2.2-20261120-windows-x64-portable.zip"
+    },
+    {
+      "id": 773186684,
+      "name": "AzureKilnPhotoTool-1.2.2-20261120-windows-x64-setup.exe",
+      "size": 86056519,
+      "state": "uploaded",
+      "digest": "sha256:d379db08eb0930dc313f0f631603479cadaed2bdfbb3777ec9cc5bdf5db66d06",
+      "browser_download_url": "https://github.com/azurekiln2333/azurekiln-photo-tool/releases/download/v1.2.2/AzureKilnPhotoTool-1.2.2-20261120-windows-x64-setup.exe"
+    }
+  ],
+  "verification": "API asset presence, uploaded state and positive size; ZIP download verification by Pi is recorded separately."
+}

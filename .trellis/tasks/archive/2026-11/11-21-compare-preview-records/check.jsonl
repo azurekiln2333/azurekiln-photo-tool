@@ -1,0 +1,6 @@
+{"file":".trellis/spec/python/duplicate-verification.md","reason":"导入记录不能绕过回收前复核"}
+{"file":".trellis/spec/pyqt/threading-and-workers.md","reason":"线程退出与忙状态门禁"}
+{"file":".trellis/spec/pyqt/quality-guidelines.md","reason":"布局、语言与窗口验证"}
+{"file":".trellis/spec/python/packaging.md","reason":"版本号、视频依赖打包与 CI 发布"}
+{"file":".trellis/spec/python/scan-records.md","reason":"最终复核记录格式、stale/角色和历史强制逐字节安全契约"}
+{"file":".trellis/spec/pyqt/shared-previews.md","reason":"最终复核窄侧栏实际高度、视频回退与有限重试"}

@@ -1,0 +1,24 @@
+{
+  "workspace": "w55",
+  "workers": [
+    {
+      "pane": "w55:p8",
+      "role": "preview"
+    },
+    {
+      "pane": "w55:p4",
+      "role": "records"
+    },
+    {
+      "pane": "w55:pA",
+      "role": "pages"
+    },
+    {
+      "pane": "w55:pB",
+      "role": "release"
+    }
+  ],
+  "method": "herdr",
+  "superseded_background_batch": true,
+  "task": "11-21-compare-preview-records"
+}

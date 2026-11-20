@@ -1,0 +1,4 @@
+{"file":".trellis/spec/python/duplicate-verification.md","reason":"精确判重与回收安全契约"}
+{"file":".trellis/spec/pyqt/threading-and-workers.md","reason":"异步 I/O、UI 和关闭生命周期"}
+{"file":".trellis/spec/pyqt/quality-guidelines.md","reason":"独立/内嵌与隔离配置验证"}
+{"file":".trellis/spec/pyqt/translations.md","reason":"中英界面完整性"}

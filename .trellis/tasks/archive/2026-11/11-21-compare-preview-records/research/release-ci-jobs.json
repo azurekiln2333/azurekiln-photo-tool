@@ -1,0 +1,208 @@
+[
+  {
+    "run_id": 44805533013,
+    "jobs": [
+      {
+        "id": 136528410450,
+        "name": "build",
+        "status": "in_progress",
+        "conclusion": null,
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Checkout",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Set up Python",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install dependencies",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run unit tests (offscreen, isolated APPDATA)",
+            "status": "in_progress",
+            "conclusion": null
+          },
+          {
+            "name": "Read and check version",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Cache ExifTool",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Download ExifTool",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Configure ExifTool",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Build onefile exe (PyInstaller)",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Verify bundle contents",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Package portable zip",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Ensure Inno Setup",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Build installer (Inno Setup)",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Upload artifacts",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Publish GitHub Release",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Post Set up Python",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Post Checkout",
+            "status": "pending",
+            "conclusion": null
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "run_id": 44805641929,
+    "jobs": [
+      {
+        "id": 136528788200,
+        "name": "build",
+        "status": "in_progress",
+        "conclusion": null,
+        "steps": [
+          {
+            "name": "Set up job",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Checkout",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Set up Python",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install dependencies",
+            "status": "completed",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run unit tests (offscreen, isolated APPDATA)",
+            "status": "in_progress",
+            "conclusion": null
+          },
+          {
+            "name": "Read and check version",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Cache ExifTool",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Download ExifTool",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Configure ExifTool",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Build onefile exe (PyInstaller)",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Verify bundle contents",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Package portable zip",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Ensure Inno Setup",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Build installer (Inno Setup)",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Upload artifacts",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Publish GitHub Release",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Post Set up Python",
+            "status": "pending",
+            "conclusion": null
+          },
+          {
+            "name": "Post Checkout",
+            "status": "pending",
+            "conclusion": null
+          }
+        ]
+      }
+    ]
+  }
+]
