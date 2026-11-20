@@ -25,7 +25,8 @@
 | [错误处理](./error-handling.md) | 异常捕获与降级策略 |
 | [日志约定](./logging-guidelines.md) | 本项目的「日志」现状 |
 | [ExifTool 与元数据](./exiftool-and-metadata.md) | ExifTool 调用、EXIF SubIFD、时间来源优先级 |
-| [媒体统计与目录说明](./media-statistics.md) | 云占位枚举、计数快照、已有说明的编码与安全写回契约 |
+| [媒体统计与目录说明](./media-statistics.md) | 云占位枚举、计数快照、说明自动保存/创建与编码保护契约 |
+| [重复判定与安全回收](./duplicate-verification.md) | 目录比对/目录内去重共用核心、三重校验、回收前复核、枚举边界 |
 | [打包约定](./packaging.md) | PyInstaller onefile/onedir、ExifTool 布局 |
 | [质量约定](./quality-guidelines.md) | 验证方式、验收标准、禁止事项 |
 

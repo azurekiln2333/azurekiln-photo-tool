@@ -14,6 +14,12 @@ hiddenimports = [
     "win32com.shell",
     "win32timezone",
     "exiftool_resolver",
+    # 目录比对 / 目录内去重：unified_gui 用 importlib 动态导入（带占位页降级），
+    # 静态分析看不到这两个模块，必须显式声明，否则打包后会退化成占位页。
+    "dir_compare_gui",
+    "folder_dedupe_gui",
+    "duplicate_scan_core",
+    "media_thumbnail",
 ]
 
 for package_name in ("qfluentwidgets", "qframelesswindow"):

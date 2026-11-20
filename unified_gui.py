@@ -126,6 +126,33 @@ TRANSLATIONS["en"].update(
 # 媒体统计页导航文案（页面内部文案由 media_statistics_gui 自带字典负责）
 TRANSLATIONS["zh"].update({"media_statistics": "媒体统计"})
 TRANSLATIONS["en"].update({"media_statistics": "Media Statistics"})
+# 目录比对 / 目录内去重页导航文案（页面内部文案由各自页面字典负责）
+TRANSLATIONS["zh"].update(
+    {
+        "dir_compare": "目录比对",
+        "folder_dedupe": "目录内去重",
+    }
+)
+TRANSLATIONS["en"].update(
+    {
+        "dir_compare": "Folder Compare",
+        "folder_dedupe": "Folder Dedupe",
+    }
+)
+
+# 新页面模块缺失时的占位页文案（打包漏文件或开发中模块未就绪）
+PLACEHOLDER_TRANSLATIONS = {
+    "zh": {
+        "title": "页面未就绪",
+        "subtitle": "缺少模块 {module}，其他功能页仍可正常使用。",
+        "hint": "请确认该文件与程序在同一目录，或重新安装 / 重新构建。",
+    },
+    "en": {
+        "title": "Page unavailable",
+        "subtitle": "Module {module} is missing; the other pages keep working.",
+        "hint": "Make sure the file sits next to the program, or reinstall / rebuild it.",
+    },
+}
 
 
 def _import_fluent():
@@ -218,6 +245,79 @@ class EmbeddedPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(content)
+
+
+class UnavailablePage(QWidget):
+    """模块缺失时的占位页：保持导航结构稳定，并说明到底缺什么。
+
+    新页面（目录比对 / 目录内去重）以独立模块交付，打包漏文件或开发中模块未就绪时，
+    不能让整个统一 GUI 崩掉——其他六个功能页必须还能用。
+    """
+
+    def __init__(self, object_name: str, module_name: str, lang: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName(object_name)
+        self.module_name = module_name
+        self.lang = lang
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 28, 28, 28)
+        layout.setSpacing(8)
+        self.title_label = SubtitleLabel(self)
+        title_font = QFont("Microsoft YaHei", 15)
+        title_font.setBold(True)
+        self.title_label.setFont(title_font)
+        self.subtitle_label = BodyLabel(self)
+        self.hint_label = BodyLabel(self)
+        self.hint_label.setStyleSheet("color: #98A2B3;")
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.subtitle_label)
+        layout.addWidget(self.hint_label)
+        layout.addStretch(1)
+        self._apply_language()
+
+    def set_language(self, lang: str):
+        self.lang = lang
+        self._apply_language()
+
+    def _apply_language(self):
+        text = PLACEHOLDER_TRANSLATIONS.get(self.lang, PLACEHOLDER_TRANSLATIONS["zh"])
+        self.title_label.setText(text["title"])
+        self.subtitle_label.setText(text["subtitle"].format(module=self.module_name))
+        self.hint_label.setText(text["hint"])
+
+
+def _load_optional_window(module_name: str, class_name: str = "MainWindow"):
+    """导入新功能页的 MainWindow；模块不可用时返回 None（由调用方渲染占位页）。"""
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:  # 模块缺失 / 依赖缺失都只报警，不阻断其他页面
+        print(f"[unified_gui] {module_name} 不可用：{exc}", file=sys.stderr)
+        return None
+    window_class = getattr(module, class_name, None)
+    if window_class is None:
+        print(f"[unified_gui] {module_name} 缺少 {class_name}", file=sys.stderr)
+    return window_class
+
+
+def _shutdown_thumbnails(feature_window) -> None:
+    """页面被内嵌后不会收到 closeEvent，这里按其契约关闭缩略图线程池。"""
+    for attr_name in ("thumbnail_loader", "preview_panel"):
+        target = getattr(feature_window, attr_name, None)
+        shutdown = getattr(target, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown()
+            except Exception:
+                pass
+
+
+class OptionalPage:
+    """新功能页的容器：page 是实际嵌入的 QWidget，window 为 None 时表示模块缺失。"""
+
+    def __init__(self, page: QWidget, window: FramelessMainWindow | None = None):
+        self.page = page
+        self.window = window
 
 
 class SettingsPage(QWidget):
@@ -483,6 +583,15 @@ class UnifiedMainWindow(FluentWindow):
             "media_statistics", self.media_statistics_window, self
         )
 
+        # 目录比对 / 目录内去重：直接嵌入后追加到导航（排在现有"去重"页之后）。
+        # 模块缺失时退化为占位页，保证其他功能页仍可用。
+        self.dir_compare_window = self._create_optional_page(
+            "dir_compare_gui", "dir_compare", self
+        )
+        self.folder_dedupe_window = self._create_optional_page(
+            "folder_dedupe_gui", "folder_dedupe", self
+        )
+
         self.about_page = AboutPage(self)
         self.settings_page = SettingsPage(self._feature_windows, self)
 
@@ -528,6 +637,18 @@ class UnifiedMainWindow(FluentWindow):
             TRANSLATIONS[self.lang]["media_statistics"],
             NavigationItemPosition.TOP,
         )
+        self.dir_compare_item = self.addSubInterface(
+            self.dir_compare_window.page,
+            _pick_icon("COMPARE", "FILTER", "SEARCH", "FOLDER"),
+            TRANSLATIONS[self.lang]["dir_compare"],
+            NavigationItemPosition.TOP,
+        )
+        self.folder_dedupe_item = self.addSubInterface(
+            self.folder_dedupe_window.page,
+            _pick_icon("ELIMINATE", "FOLDER", "DELETE", "REMOVE"),
+            TRANSLATIONS[self.lang]["folder_dedupe"],
+            NavigationItemPosition.TOP,
+        )
         self.about_item = self.addSubInterface(
             self.about_page,
             _pick_icon("INFO", "HELP", "APPLICATION"),
@@ -543,6 +664,22 @@ class UnifiedMainWindow(FluentWindow):
         self.settings_page.language_combo.currentIndexChanged.connect(self._on_language_changed)
         self.apply_language(self.lang, save=False)
         self._tune_animations()
+
+    def _create_optional_page(self, module_name: str, object_name: str, parent) -> OptionalPage:
+        """创建新功能页并包成 EmbeddedPage；模块缺失时用 UnavailablePage 顶上。"""
+        window_class = _load_optional_window(module_name)
+        if window_class is None:
+            return OptionalPage(UnavailablePage(object_name, module_name, self.lang, parent))
+        window = window_class(parent, embedded=True)
+        page = EmbeddedPage(object_name, window, parent)
+        return OptionalPage(page, window)
+
+    def _optional_windows(self) -> list[FramelessMainWindow]:
+        return [
+            wrapper.window
+            for wrapper in (self.dir_compare_window, self.folder_dedupe_window)
+            if wrapper.window is not None
+        ]
 
     def switchTo(self, interface: QWidget):
         if interface is self.stackedWidget.currentWidget():
@@ -658,6 +795,10 @@ class UnifiedMainWindow(FluentWindow):
         self.dedupe_item.setToolTip(text["dedupe"])
         self.media_statistics_item.setText(text["media_statistics"])
         self.media_statistics_item.setToolTip(text["media_statistics"])
+        self.dir_compare_item.setText(text["dir_compare"])
+        self.dir_compare_item.setToolTip(text["dir_compare"])
+        self.folder_dedupe_item.setText(text["folder_dedupe"])
+        self.folder_dedupe_item.setToolTip(text["folder_dedupe"])
         self.about_item.setText(text["about"])
         self.about_item.setToolTip(text["about"])
         self.settings_item.setText(text["settings"])
@@ -670,6 +811,15 @@ class UnifiedMainWindow(FluentWindow):
 
         # 媒体统计页：语言走同一套 lang / language_combo / _apply_language 约定
         self._apply_feature_language(self.media_statistics_window, lang)
+
+        # 目录比对 / 目录内去重页（模块缺失时是占位页，只需 set_language）
+        for wrapper in (self.dir_compare_window, self.folder_dedupe_window):
+            if wrapper.window is not None:
+                self._apply_feature_language(wrapper.window, lang)
+            else:
+                set_language = getattr(wrapper.page, "set_language", None)
+                if callable(set_language):
+                    set_language(lang)
 
         if save:
             self._save_global_settings()
@@ -730,6 +880,9 @@ class UnifiedMainWindow(FluentWindow):
                     self.switchTo(self.media_statistics_page)
                     event.ignore()
                     return
+        # 内嵌的功能页收不到自己的 closeEvent，需要在这里关闭它们的缩略图线程池。
+        for feature_window in self._optional_windows():
+            _shutdown_thumbnails(feature_window)
         super().closeEvent(event)
 
 
