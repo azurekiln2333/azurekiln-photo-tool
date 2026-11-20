@@ -23,6 +23,7 @@ import tempfile
 import time
 import traceback
 import unittest
+from contextlib import chdir
 from dataclasses import replace
 from pathlib import Path
 from unittest import mock
@@ -296,15 +297,20 @@ class RecordRoundTripTests(ComparePageTestBase):
         self.assertEqual(self.window._recyclable_count(), 2)
 
     def test_relative_root_is_absolutized_in_snapshot(self):
-        self.window.root_a_edit.setText(os.path.relpath(self.root_a, Path.cwd()))
-        self.window.root_b_edit.setText(os.path.relpath(self.root_b, Path.cwd()))
-        self.window.btn_scan.click()
-        self.assertTrue(_pump(15.0, lambda: self.window._has_scan), "扫描未完成")
-        self.assertTrue(_pump(15.0, lambda: not self.window._is_busy()))
-        target = self.tmp / "relative.json"
-        record = self.export_to(target)
+        # 临时目录（CI 在 C:）与 repo（D:）可能跨盘，不能在盘外计算 relpath。
+        # 用 chdir 进入临时目录后构造合法的相对路径；异常也会恢复 cwd。
+        with chdir(self.tmp):
+            self.window.root_a_edit.setText(os.path.relpath(self.root_a, Path.cwd()))
+            self.window.root_b_edit.setText(os.path.relpath(self.root_b, Path.cwd()))
+            self.window.btn_scan.click()
+            self.assertTrue(_pump(15.0, lambda: self.window._has_scan), "扫描未完成")
+            self.assertTrue(_pump(15.0, lambda: not self.window._is_busy()))
+            target = self.tmp / "relative.json"
+            record = self.export_to(target)
         self.assertTrue(os.path.isabs(str(record.root_a)))
         self.assertTrue(os.path.isabs(str(record.root_b)))
+        self.assertEqual(record.root_a, Path(os.path.abspath(self.root_a)))
+        self.assertEqual(record.root_b, Path(os.path.abspath(self.root_b)))
 
     def test_export_uses_scan_time_snapshot(self):
         self.run_real_scan()

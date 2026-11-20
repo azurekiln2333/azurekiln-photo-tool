@@ -53,6 +53,13 @@ $env:QT_QPA_PLATFORM = "offscreen"
 
 CI 的单元测试步骤必须有 **step 级有界超时**（如 `timeout-minutes: 5`）。测试挂起（模态框、线程未退出）在无超时的作业里会占满配额直到平台默认上限，既耗时又让失败原因不可区分（挂起 vs 断言失败）。
 
+### 临时目录可能与仓库不同盘
+
+测试用的临时目录不一定和 repo 同盘（如 Windows runner：repo 在 D:，`TEMP` 在 C:）。
+- 相对路径测试应在临时根内用**有恢复保证**的 cwd 上下文（`contextlib.chdir` / `try/finally`），不要对跨盘路径用 `os.path.relpath`（直接 `ValueError`）。
+- 不能为绕过跨盘而 `skip` 用例。
+- 至少一次跨盘 `TEMP` 环境复验（如临时目录与 repo 不同盘时跑一遍）。
+
 ### 关键回归样例
 
 - `IMG_20010101_000000.jpg`（项目根）：占位文件名 + 真实 EXIF 时间 → 必须识别为 `2006-05-30`
