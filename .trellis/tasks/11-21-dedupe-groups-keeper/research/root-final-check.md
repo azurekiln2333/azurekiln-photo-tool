@@ -24,3 +24,15 @@
 ## 边界与发布
 
 真实 OneDrive 仅联机文件尚无端到端环境；本轮不声称其真实云端流程已覆盖。远端 Actions/Release 以随后发布报告为准。产品实现均由指定 herdr w55 四个 Pi 分工完成，主会话负责集成验收和发布。
+
+## 首次远端失败后的修正验收（v1.2.4）
+
+初次 cdf4176 标签流水线成功、分支流水线失败，旧测试在 QThread 清理后、10ms UI drain 前过早读取 pending 行；首次本地 PASS 不能排除此竞争。用户随后要求检查所有子分支并合入 main。
+
+- 确定性复现：不改源码，仅将真实 drain 设 250ms，原用例于原467行稳定失败（status_pending，exit 1）。pB 独立500ms探针证明 queue仍2条、页面busy；真实idle后两行正确跳过且send2trash为0，产品逻辑不需修改。
+- pA 加强同一用例：临时阻断真实 timer 的 timeout 信号，明确观察线程清理但UI仍busy、状态仍pending；恢复原信号后等待真实idle/queue与pending result全部清空。原内容不同、目标缺失、send2trash禁止、计数和Qt异常断言全部保留；finally恢复信号，无固定sleep或放宽超时。
+- pA 定向8个独立进程全部通过，见pi-ci-failure.md。root用同一250ms复现脚本复验修复后通过，1 test / 0.460s / exit 0。
+- root最终完整环境：201 tests / 9.634s / OK / exit 0，无skip。变更文件compileall、v1.2.4版本验证、diffcheck均通过。
+- pB修复后CI-like：201 tests / 8.774s / 0 failures / 0 errors / 3既有ffmpeg样片skip / exit0；源码哈希不变、cwd恢复、无残留缩略图线程，详见pi-ci-final-review.md。
+- main与子分支祖先关系已由pB独立审查：main/ci同2f8b006，folder-statistics=93fef45为当前分支祖先。最终按完整依赖链fast-forward，保留所有提交与旧标签；不单独摘取最新功能提交。
+- 后继发布改为从main发v1.2.4，已有v1.2.3不移动；实际新提交/远端结果待发布报告补齐。

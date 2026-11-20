@@ -454,12 +454,52 @@ class FolderDedupePageTests(FolderDedupeFixtureMixin, unittest.TestCase):
         # 取消勾选 byte_verify：导入记录仍必须强制逐字节复核
         self.window.byte_verify_check.setChecked(False)
         send2trash_mock = mock.Mock()
-        with mock.patch.object(duplicate_scan_core, "send2trash", send2trash_mock), \
-                mock.patch.object(g.QMessageBox, "question",
-                                  return_value=QMessageBox.StandardButton.Yes):
-            self.window.btn_recycle.click()
-            self.assertTrue(_pump(self.app, lambda: self.window._recycle_thread is None),
-                            "回收线程未在超时内结束")
+        drain_timer = self.window._drain_timer
+        signals_were_blocked = drain_timer.signalsBlocked()
+        # 阻断真实 timer 的 timeout 信号，确定制造“worker 已结束、UI drain 尚未执行”的窗口；
+        # 不改变 timer interval，也不依赖 CI 调度速度。
+        drain_timer.blockSignals(True)
+        try:
+            with mock.patch.object(duplicate_scan_core, "send2trash", send2trash_mock), \
+                    mock.patch.object(g.QMessageBox, "question",
+                                      return_value=QMessageBox.StandardButton.Yes):
+                self.window.btn_recycle.click()
+                self.assertTrue(
+                    _pump(self.app, lambda: self.window._recycle_thread is None),
+                    "回收线程未在超时内结束",
+                )
+                self.assertTrue(
+                    self.window._is_busy(),
+                    "QThread 引用已清理但延迟 drain 尚未完成时仍必须 busy",
+                )
+                self.assertTrue(
+                    self.window._pending_recycle_result is not None
+                    or bool(self.window._process_update_queue),
+                    "回归未观察到尚未排空的真实 drain 状态",
+                )
+                mid_statuses = {
+                    row.primary_path(): row.status for row in self.window.table_model.rows
+                }
+                self.assertEqual(mid_statuses[modified_target], "status_pending")
+                self.assertEqual(mid_statuses[deleted_target], "status_pending")
+
+            # 恢复真实 timer 信号后，才等待队列、pending result 和 busy 状态全部排空。
+            drain_timer.blockSignals(signals_were_blocked)
+            self.assertTrue(
+                _pump(
+                    self.app,
+                    lambda: (
+                        self.window._recycle_thread is None
+                        and not self.window._is_busy()
+                        and self.window._pending_recycle_result is None
+                        and not self.window._process_update_queue
+                    ),
+                    timeout=15.0,
+                ),
+                "回收线程虽结束但 drain/UI 状态尚未完成",
+            )
+        finally:
+            drain_timer.blockSignals(signals_were_blocked)
         self.app.processEvents()
 
         send2trash_mock.assert_not_called()

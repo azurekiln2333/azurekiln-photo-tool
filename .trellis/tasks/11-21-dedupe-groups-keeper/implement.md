@@ -24,3 +24,14 @@
 ## 本地最终验证
 
 详见 research/root-final-check.md：标准全量 201 项全部通过（9.417s，exit 0），GUI 定向 25 项通过（2.753s），核心/记录 128 项通过；语法、差异空白检查和 v1.2.3 版本校验通过。独立/内嵌 × 中英布局、真实扫描/记录线程/回收 worker 参数有独立证据。等待本版本远端发布与资产校验，不将本地成功等同于 CI/CD 已完成。
+
+## 追加：CI 时序回归与 main 集成
+
+用户在首次 push 后提供 CI 失败日志，并明确要求检查各子分支后合并 main。无需再次确认授权。
+
+- 首次工作提交 cdf4176：v1.2.3 tag run 44834696476 成功；同 SHA 分支 run 44834696733 在导入后变更文件的 GUI 回归中失败。不能将标签成功视为整体无缺陷。
+- root 确定性复现：仅延长真实 drain timer 至 250ms，旧测试等 `_recycle_thread is None` 后立即读行，稳定读到 `status_pending`。产品 `_is_busy` 已包含 is_recycling/timer/queue；线程 finished 不等于 UI 更新排空。
+- [x] pA 以真实 timer 信号门禁修正完整 idle 等待和中间态断言，定向8轮+页面25项通过；p8/p4 核对产品安全，pB 复核日志/分支范围。所有内容变更/删除/send2trash 禁止/计数断言保留。
+- [x] root 修复后完整环境201项通过（9.634s，无skip，exit0），旧250ms失败探针现在通过；pB修复后CI-like201项通过（8.774s，缺ffmpeg的3项skip，exit0），源码哈希不变、无残留缩略图线程。
+- [ ] 定向与完整环境/CI-like 复验后提交修复；分支祖先关系已初查，ci 分支等于 main，folder-statistics 为本分支祖先，可 fast-forward 完整合入 main。
+- [ ] 推送 main 与修复分支，确认新提交 CI；从 main 发布新 v1.2.4，不移动已有 v1.2.3。远端资产核验后归档本任务。

@@ -126,6 +126,8 @@ class EmbeddedPage(QWidget):
 回归见 `tests/test_unified_close.py`，须让真实记录线程挂起后触发主窗口关闭，
 验证窗口保持存活、线程收尾后关闭、DeferredDelete 后无 Qt 槽异常。
 
+异步回收测试不能把 `_recycle_thread is None` 当作行状态/计数已完成：finished 回调可能先清线程引用，10ms drain 才应用 queued updates 与 pending result。读取最终状态前须有界 pump 至 `not _is_busy()`，且 pending result/更新队列均已清空。用受控真实 timer 信号门禁覆盖“线程已结束但 UI 仍 busy”的窗口，`finally` 恢复后等待真实排空；不能靠固定 sleep、扩大超时、重跑偶发绿或删安全断言掩盖时序缺陷。
+
 ---
 
 ## 禁止事项

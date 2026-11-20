@@ -35,7 +35,7 @@ from timestamp_fix_gui import MainWindow as TimestampFixWindow
 
 APP_TITLE = "AzureKiln Photo Tool"
 APP_NAME = "AzureKilnPhotoTool"
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 GITHUB_URL = "https://github.com/azurekiln2333/azurekiln-photo-tool"
 SUPPORTED_LANGUAGES = ("zh", "en")
 TRANSLATIONS = {
