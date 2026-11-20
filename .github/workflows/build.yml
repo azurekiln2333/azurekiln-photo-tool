@@ -44,6 +44,8 @@ jobs:
       - name: Run unit tests (offscreen, isolated APPDATA)
         # 有意义的最小门禁：标准库 unittest，不引入 pytest 等新依赖。
         # GUI 测试必须离屏运行并把 APPDATA/LOCALAPPDATA 指到临时目录，避免读用户真实配置。
+        # 超过 5 分钟视为卡住而非慢测（模态框等待会无限挂起），避免占用 runner 且掩盖真实结果。
+        timeout-minutes: 5
         run: |
           $env:QT_QPA_PLATFORM = "offscreen"
           $env:APPDATA = Join-Path $env:RUNNER_TEMP "azurekiln-appdata-tests"

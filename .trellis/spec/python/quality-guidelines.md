@@ -37,6 +37,22 @@ $env:QT_QPA_PLATFORM = "offscreen"
 - monkeypatch `QMessageBox.information`，否则模态框会**永久阻塞**
 - 构造各页面 `MainWindow`，断言无异常
 
+### GUI 关闭/集成测试的外部依赖隔离
+
+构造「全功能统一窗口」的集成测试（如 `tests/test_unified_close.py`）会**初始化未受测页面**，这些页面可能依赖外部可执行工具（ExifTool、ffmpeg 等）或外部副作用库（send2trash），并可能弹出**模态**对话框。
+
+- 必须隔离或替身**非受测**依赖：外部可执行工具用临时目录/解析器替身，外部副作用（如 send2trash）用 mock，确保被测流程不依赖本机安装状态。
+- 阻塞只来自**模态**对话框：`QMessageBox.critical/warning/question` 在无头环境会永久阻塞。`InfoBar` 是非模态轻量提示，**不阻塞**，不需要为了防死锁而屏蔽。
+- 对**预期会出现的**对话框，mock 后要断言其确实被触发（或让它返回明确的选择，如 `QMessageBox.StandardButton.Yes`），以证明分支真的走到了。
+- **不要笼统 mock 掉所有提示来掩盖意外错误**：信息提示（`InfoBar` 等）应保留，或在测试末尾汇总断言未出现意外错误提示；否则真实缺陷会被静默吞掉。
+- 至少验证一次「外部工具缺失」环境：把工具解析器指向空目录或直接 patch 为 `None`，断言流程不阻塞、不弹模态框、进程能正常退出。
+- **不能以「本机已安装该工具」判定测试可移植**。本地有 ExifTool，而 CI 单测先于 `ConfigureExifTool` 步骤，本机通过 ≠ CI 通过（实际教训：旧 Flyme 页找不到 ExifTool 后 `main_gui.py:463` 的 `QMessageBox.critical` 模态卡死整个作业）。
+- 集成测试内部等待（事件循环、线程收尾）都要有超时，超时即失败，不允无限等。
+
+### CI 测试超时
+
+CI 的单元测试步骤必须有 **step 级有界超时**（如 `timeout-minutes: 5`）。测试挂起（模态框、线程未退出）在无超时的作业里会占满配额直到平台默认上限，既耗时又让失败原因不可区分（挂起 vs 断言失败）。
+
 ### 关键回归样例
 
 - `IMG_20010101_000000.jpg`（项目根）：占位文件名 + 真实 EXIF 时间 → 必须识别为 `2006-05-30`
@@ -75,5 +91,6 @@ docs: document all six feature pages
 
 - ❌ 不要把调试 `print()` 提交。
 - ❌ 不要提交 `%APPDATA%` 下的真实配置文件。
+- ❌ 不要用「本机已装 ExifTool/ffmpeg」证明 GUI 集成测试可移植；不隔离外部工具就跑全功能统一窗会卡在模态框。
 - ❌ 不要为了「优雅」而大范围重命名/重构扁平结构。
 - ❌ 不要在没跑 `compileall` 的情况下声称「验证通过」。

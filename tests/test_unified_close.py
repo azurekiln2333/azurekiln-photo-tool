@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import QApplication
 
 import dir_compare_gui
 import folder_dedupe_gui
+import main_gui
 from scan_record_core import load_record
 from unified_gui import UnifiedMainWindow
 
@@ -33,6 +34,23 @@ class UnifiedRecordCloseTests(unittest.TestCase):
         while not predicate() and time.monotonic() < deadline:
             QTest.qWait(10)
         self.assertTrue(predicate(), "后台任务未在期限内完成清理")
+
+    def _make_unified_window_without_exiftool(self):
+        """构造真实统一窗；只隔离与本关闭测试无关的 Flyme ExifTool 依赖。"""
+        with patch.object(
+            main_gui,
+            "LivePhotoFixTool",
+            return_value=MagicMock(name="LivePhotoFixTool"),
+        ) as tool_constructor, \
+             patch("flyme_livephoto_fix_core.resolve_exiftool") as resolve_exiftool, \
+             patch.object(main_gui.QMessageBox, "critical") as critical:
+            window = UnifiedMainWindow()
+            # 构造期间必须走隔离的引擎，绝不能探测/启动外部 ExifTool 或弹模态框。
+            tool_constructor.assert_called_once()
+            resolve_exiftool.assert_not_called()
+            critical.assert_not_called()
+        self.assertIsInstance(window._feature_windows[2].engine, MagicMock)
+        return window
 
     def _check_close_during_save(self, mode):
         module = dir_compare_gui if mode == "compare" else folder_dedupe_gui
@@ -52,7 +70,7 @@ class UnifiedRecordCloseTests(unittest.TestCase):
                                          "LOCALAPPDATA": str(base / "local")}), \
                  patch.object(sys, "excepthook", lambda kind, value, tb: errors.append(
                      f"{kind.__name__}: {value}")):
-                window = UnifiedMainWindow()
+                window = self._make_unified_window_without_exiftool()
                 page = (window.dir_compare_window.window if mode == "compare"
                         else window.folder_dedupe_window.window)
                 self.assertIsNotNone(page)
