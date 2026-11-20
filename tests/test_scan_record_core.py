@@ -289,7 +289,22 @@ class InternalRecordTest(_TempCase):
         self.assertEqual(loaded.keep_strategy, "newest")
         self.assertEqual(len(loaded.result.groups), 2)
         self.assertEqual(loaded.result.groups[0].duplicates[0].path, record.result.groups[0].duplicates[0].path)
+        # schema v1 合法的 keeper-only 组仍能导入并按 keeper 自身类型分类。
+        self.assertEqual(core.classify_duplicate_group(loaded.result.groups[1]), "photo")
         self.assertEqual(loaded.row_states, record.row_states)
+
+    def test_internal_single_keeper_group_v1_roundtrip_classifies_by_keeper(self) -> None:
+        record = self._build()
+        target = self.path("internal-single-keeper-v1.json")
+        records.save_record(target, record)
+
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema_version"], records.SCHEMA_VERSION)
+        loaded = records.load_record(target, expected_mode="internal")
+        singleton = loaded.result.groups[1]
+        self.assertEqual(singleton.duplicates, [])
+        self.assertEqual(singleton.keeper.path.name, "keep2.jpg")
+        self.assertEqual(core.classify_duplicate_group(singleton), "photo")
 
     def test_internal_rejects_foreign_root_in_snapshot(self) -> None:
         record = self._build()

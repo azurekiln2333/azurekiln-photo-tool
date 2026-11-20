@@ -27,6 +27,8 @@ except Exception:  # pragma: no cover - 仅依赖缺失时触发
 
 __all__ = [
     "MEDIA_EXTENSIONS",
+    "MediaType",
+    "VIDEO_EXTENSIONS",
     "CancelCheck",
     "DuplicateGroup",
     "FileEntry",
@@ -40,11 +42,14 @@ __all__ = [
     "ScanScope",
     "SkipReason",
     "choose_keeper",
+    "classify_duplicate_group",
+    "classify_media_type",
     "collect_files",
     "files_identical",
     "find_cross_duplicates",
     "find_internal_duplicates",
     "recycle_duplicate",
+    "reselect_internal_keeper",
     "revalidate_pair",
     "send2trash",
     "sha256_file",
@@ -53,6 +58,7 @@ __all__ = [
 
 ScanScope = Literal["all", "media"]                          # "all" 默认
 KeepStrategy = Literal["shallowest", "oldest", "newest"]     # "shallowest" 默认
+MediaType = Literal["photo", "video", "other"]
 ProgressCallback = Callable[[str, int, int], None]           # (stage, done, total)
 CancelCheck = Callable[[], bool]                             # True 表示应尽快停止
 
@@ -73,6 +79,15 @@ MEDIA_EXTENSIONS: frozenset[str] = frozenset(
         ".orf", ".rw2", ".raf", ".pef", ".srw", ".3fr", ".erf", ".kdc", ".mrw",
         ".dcr", ".x3f",
         # 视频
+        ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".3gp", ".3g2", ".wmv", ".mts",
+        ".m2ts", ".m2t", ".mpg", ".mpeg", ".flv", ".f4v", ".webm", ".ts", ".mxf",
+        ".vob", ".asf", ".rm", ".rmvb",
+    }
+)
+
+# ``MEDIA_EXTENSIONS`` 的视频子集；剩余媒体扩展名统一视为照片（含 RAW）。
+VIDEO_EXTENSIONS: frozenset[str] = frozenset(
+    {
         ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".3gp", ".3g2", ".wmv", ".mts",
         ".m2ts", ".m2t", ".mpg", ".mpeg", ".flv", ".f4v", ".webm", ".ts", ".mxf",
         ".vob", ".asf", ".rm", ".rmvb",
@@ -120,6 +135,75 @@ class DuplicateGroup:
     duplicates: list[FileEntry]
     sha256: str
     size: int
+
+
+def classify_duplicate_group(group: DuplicateGroup) -> MediaType:
+    """按整组分类，混合扩展名时固定采用 photo > video > other。"""
+    if not isinstance(group, DuplicateGroup):
+        raise ValueError("group_invalid")
+    if not isinstance(group.keeper, FileEntry) or not isinstance(group.duplicates, list):
+        raise ValueError("group_invalid")
+    if not group.duplicates:
+        return classify_media_type(group.keeper.path)
+    members = [group.keeper, *group.duplicates]
+    if any(not isinstance(member, FileEntry) for member in members):
+        raise ValueError("group_member_invalid")
+    kinds = {classify_media_type(member.path) for member in members}
+    if "photo" in kinds:
+        return "photo"
+    if "video" in kinds:
+        return "video"
+    return "other"
+
+
+def reselect_internal_keeper(group: DuplicateGroup, new_keeper: FileEntry) -> DuplicateGroup:
+    """纯内存地为同根 internal 组重选 keeper；不修改输入，不验证磁盘状态。
+
+    候选必须是组内成员的完整扫描快照。此函数不检查文件存在性，也不验证内容；
+    实际回收仍须经过 ``revalidate_pair``。
+    """
+    if not isinstance(group, DuplicateGroup):
+        raise ValueError("group_invalid")
+    if not isinstance(group.keeper, FileEntry) or not isinstance(group.duplicates, list):
+        raise ValueError("group_invalid")
+    if not isinstance(new_keeper, FileEntry):
+        raise ValueError("keeper_invalid")
+    if not group.duplicates:
+        raise ValueError("group_empty")
+
+    members = [group.keeper, *group.duplicates]
+    if any(not isinstance(member, FileEntry) for member in members):
+        raise ValueError("group_member_invalid")
+
+    root_key = _lexical_path_key(group.keeper.root)
+    seen_paths: set[str] = set()
+    for member in members:
+        if _lexical_path_key(member.root) != root_key:
+            raise ValueError("group_cross_root")
+        if member.size != group.size:
+            raise ValueError("group_size_mismatch")
+        path_key = _lexical_path_key(member.path)
+        if path_key in seen_paths:
+            raise ValueError("group_duplicate_path")
+        seen_paths.add(path_key)
+
+    selected_key = _entry_snapshot_key(new_keeper)
+    selected = next(
+        (member for member in members if _entry_snapshot_key(member) == selected_key),
+        None,
+    )
+    if selected is None:
+        raise ValueError("keeper_not_group_member")
+    remaining = sorted(
+        (member for member in members if member is not selected),
+        key=_path_sort_key,
+    )
+    return DuplicateGroup(
+        keeper=selected,
+        duplicates=remaining,
+        sha256=group.sha256,
+        size=group.size,
+    )
 
 
 @dataclass
@@ -184,6 +268,32 @@ def _suffix(name: str) -> str:
     if dot <= 0:
         return ""
     return name[dot:].casefold()
+
+
+def _lexical_path_key(path: Path) -> str:
+    """规范化路径文本但不解析链接或访问文件系统。"""
+    return os.path.normcase(os.path.normpath(os.fspath(path)))
+
+
+def _entry_snapshot_key(entry: FileEntry) -> tuple:
+    """按路径/root 与完整扫描指纹标识条目，不触碰磁盘。"""
+    return (
+        _lexical_path_key(entry.path),
+        _lexical_path_key(entry.root),
+        entry.size,
+        entry.mtime_ns,
+        entry.file_id,
+    )
+
+
+def classify_media_type(path: Path | str) -> MediaType:
+    """按已有扩展名集合分类；只解析路径文本，不访问文件系统。"""
+    suffix = _suffix(Path(os.fspath(path)).name)
+    if suffix in VIDEO_EXTENSIONS:
+        return "video"
+    if suffix in MEDIA_EXTENSIONS:
+        return "photo"
+    return "other"
 
 
 def _path_sort_key(value: FileEntry | Path) -> str:

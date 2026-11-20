@@ -88,6 +88,15 @@ self.table.viewport().installEventFilter(self)
 
 ---
 
+### 目录内去重：类型筛选与保留项切换
+
+- `folder_dedupe_gui.py` 的照片/视频/其他筛选以 `classify_duplicate_group` 为整组分配类别（photo > video > other）；mismatch/issue 按自身路径分类。按钮计数分别表示重复组数和文件行数（保留行+副本，另含该类别的问题行），不能混成同一含义。
+- `_row_categories` 与 source rows 等长；筛选仅 `setRowHidden`，不重排/重建 rows。切换保留项也复用原路径行，worker 始终以原 source row_index 回写。
+- 全选/全不选/反选只处理当前可见类别的合法 pending targets，隐藏类别的 checked 保留。实际回收仍遍历所有类别已勾选的合法副本，确认框必须展示全类别数量/总字节数，不能只报当前 tab。
+- “设为保留”先检查 busy/stale/cancelled、组归属、未处理状态和候选快照，再调用核心纯内存重选接口；同步 `ScanResult.groups`、同组每行角色/keeper 引用、状态与勾选。新 keeper 未勾选、旧 keeper 成 pending 并默认勾选、其余副本合法状态保留；已处理组禁止经切换恢复资格。
+- 预览按**每个具体路径/每个槽**判断：other 路径不调用 loader，槽传空路径以清旧图；混合组中 selected=other、keeper=photo 时可只保留 keeper 的媒体预览。不能按整组为 photo 就给其中 other 成员请求缩略图，也不能用全局禁预览使测试假通过。
+- 新类别/保留项按钮和动态计数必须 zh/en 完整，独立/内嵌两种模式都可操作；真实按钮和回收线程的参数测试应锁住上述源行/keeper 关系。
+
 ## 嵌入机制（`unified_gui.EmbeddedPage`）
 
 ```python

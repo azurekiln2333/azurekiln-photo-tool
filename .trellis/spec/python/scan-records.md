@@ -36,6 +36,13 @@ def load_record(path: Path, *, expected_mode: str | None = None) -> ScanRecord: 
 - 路径允许已经删除，供历史展示；现存链接仍按真实路径检查根归属，不能退回词法路径放行无法确认的解析。
 - GUI 导出使用扫描时的根/选项快照和最新处理状态，不能读取后来改过的目录输入框冒充原扫描参数。导入标记 `_record_imported=True`，回收强制 `byte_verify=True`；取消、失效记录不可回收。
 
+### 目录内去重重选 keeper（schema v1 不变）
+
+- 新 keeper 关系直接保存在更新后的 `result.groups`，不增加平行角色字段、不升级 schema；旧 v1 记录仍按原 validator 读取。类型分类/当前筛选是展示派生值，不必写入记录。
+- 页面必须先同步实际 group 和所有同组行的角色/keeper 引用，再按绝对路径生成 `row_states`：新 keeper 为 `status_keep`、未勾选；旧 keeper 转为 `status_pending` 目标并默认勾选；其它目标保留原合法勾选状态。只改表格文案不会改变记录角色，属于错误实现。
+- `row_states` 不能反过来授权 keeper 变 target；已处理组不许通过重选变回 pending，导入仍强制逐字节复核。目录比对模式的 A/B 约束不变，不能借 internal 功能放宽 compare 角色验证。
+- 兼容边界包括既有合法 internal 单 keeper 组（`duplicates=[]`）：记录 validator 已允许，展示分类不得因无副本抛错或使整份旧记录导入失败；它没有可切换目标，也不能获得回收资格。
+
 ## 4. 校验与错误矩阵
 
 | 条件 | 处理 |
@@ -59,6 +66,7 @@ def load_record(path: Path, *, expected_mode: str | None = None) -> ScanRecord: 
 `tests/test_scan_record_core.py`：两模式往返、严格类型/版本/模式、根路径和链接越界、错误角色、重复目标、keeper/target 相交、JSON 重复键/非法数字/大小、原子保存失败保留旧记录、stale、已删除历史，以及导入后修改/删除文件不触发回收。
 
 页面测试应从按钮启动异步导入/导出，验证坏导入保留结果、扫描快照与编辑控件隔离、导入强制逐字节、取消/失效记录锁定；记录线程必须进入忙状态和独立/内嵌关闭协议。
+目录内重选后须以真实按钮导出/导入验证新 keeper、旧 keeper 的目标资格、其它副本逐路径 checked/status；真实回收 worker 必须收到新 keeper 和 imported 强制 `byte_verify=True`。保留旧 v1（含无副本 keeper 组）导入用例，不可用收紧格式或新增 skip 绕过兼容回归。
 
 ## 7. 错误与正确写法
 

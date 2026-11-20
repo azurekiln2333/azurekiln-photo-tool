@@ -1,0 +1,5 @@
+{"file":".trellis/spec/pyqt/page-structure.md","reason":"稳定行号、筛选与内嵌模式"}
+{"file":".trellis/spec/pyqt/threading-and-workers.md","reason":"后台任务、busy 与关闭契约"}
+{"file":".trellis/spec/pyqt/translations.md","reason":"新增中英文控件"}
+{"file":".trellis/spec/python/duplicate-verification.md","reason":"准确查重及唯一保留项"}
+{"file":".trellis/spec/python/scan-records.md","reason":"动态 keeper 的记录角色一致性"}

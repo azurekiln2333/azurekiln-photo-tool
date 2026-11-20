@@ -26,6 +26,9 @@ from duplicate_scan_core import (
     ScanCancelled,
     ScanResult,
     find_internal_duplicates,
+    classify_media_type,
+    classify_duplicate_group,
+    reselect_internal_keeper,
     recycle_duplicate,
 )
 from elevation_hint import attach_elevation_hint
@@ -235,6 +238,12 @@ TRANSLATIONS = {
         "btn_select_all": "全选",
         "btn_select_none": "全不选",
         "btn_invert": "反选",
+        "category_photo": "照片 · {groups} 组 / {files} 个文件",
+        "category_video": "视频 · {groups} 组 / {files} 个文件",
+        "category_other": "其他 · {groups} 组 / {files} 个文件",
+        "btn_set_keeper": "设为保留",
+        "keeper_changed": "已将所选文件设为本组保留项",
+        "keeper_reselect_invalid": "无法切换保留项：候选文件已变化或本组已有处理结果",
         "btn_export_record": "导出记录",
         "btn_import_record": "导入记录",
         "record_action_save": "导出",
@@ -359,6 +368,12 @@ TRANSLATIONS = {
         "btn_select_all": "Select all",
         "btn_select_none": "Select none",
         "btn_invert": "Invert",
+        "category_photo": "Photos · {groups} groups / {files} files",
+        "category_video": "Videos · {groups} groups / {files} files",
+        "category_other": "Other · {groups} groups / {files} files",
+        "btn_set_keeper": "Set as keeper",
+        "keeper_changed": "Selected file is now the group keeper",
+        "keeper_reselect_invalid": "Cannot change keeper: candidate changed or this group has processed items",
         "btn_export_record": "Export record",
         "btn_import_record": "Import record",
         "record_action_save": "export",
@@ -937,6 +952,12 @@ class MainWindow(FramelessMainWindow):
         self._current_result: ScanResult | None = None
         self._record_imported = False
 
+        # 每个源行固定归属一个类别；筛选仅隐藏行，绝不重排/重建 worker 的源索引
+        self.active_category = "photo"
+        self._row_categories: list[str] = []
+        self._group_categories: dict[int, str] = {}
+        self.category_buttons: dict[str, PushButton] = {}
+
         self._process_update_queue: deque[tuple[int, str]] = deque()
         self._pending_recycle_result: dict | None = None
         self._drain_timer = QTimer(self)
@@ -1064,6 +1085,23 @@ class MainWindow(FramelessMainWindow):
         table_layout.setSpacing(8)
         self.tabs_hint = BodyLabel(self.tr("tabs_hint"), self)
         self.tabs_hint.setStyleSheet("color: #6b7280; padding: 4px 6px;")
+        self.category_bar = QHBoxLayout()
+        self.category_bar.setSpacing(8)
+        self.category_buttons = {}
+        self.btn_filter_photo = PushButton("", self)
+        self.btn_filter_video = PushButton("", self)
+        self.btn_filter_other = PushButton("", self)
+        self.category_buttons.update({
+            "photo": self.btn_filter_photo,
+            "video": self.btn_filter_video,
+            "other": self.btn_filter_other,
+        })
+        for category, button in self.category_buttons.items():
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda _checked=False, value=category: self.set_active_category(value)
+            )
+            self.category_bar.addWidget(button)
 
         self.table = TableView(self)
         self.table.setModel(self.table_model)
@@ -1104,8 +1142,8 @@ class MainWindow(FramelessMainWindow):
         setattr(self.table, "_file_context_menu_helper", self.table_context_menu)
         self.table.doubleClicked.connect(self._on_table_double_clicked)
         self.table.selectionModel().currentChanged.connect(self._on_current_row_changed)
-
         table_layout.addWidget(self.tabs_hint)
+        table_layout.addLayout(self.category_bar)
         table_layout.addWidget(self.table)
 
         preview_card = CardWidget(self)
@@ -1168,6 +1206,10 @@ class MainWindow(FramelessMainWindow):
         row4.addWidget(self.btn_select_all)
         row4.addWidget(self.btn_select_none)
         row4.addWidget(self.btn_invert)
+        self.btn_set_keeper = PrimaryPushButton(self.tr("btn_set_keeper"), self)
+        self.btn_set_keeper.setIcon(_pick_icon("PIN", "FAVORITE", "SAVE"))
+        self.btn_set_keeper.clicked.connect(lambda _checked=False: self.set_selected_as_keeper())
+        row4.addWidget(self.btn_set_keeper)
         row4.addStretch(1)
         self.btn_export_record = PushButton(self.tr("btn_export_record"), self)
         self.btn_export_record.clicked.connect(lambda _checked=False: self.export_scan_record())
@@ -1448,6 +1490,8 @@ class MainWindow(FramelessMainWindow):
         self.btn_invert.setText(self.tr("btn_invert"))
         self.btn_export_record.setText(self.tr("btn_export_record"))
         self.btn_import_record.setText(self.tr("btn_import_record"))
+        self.btn_set_keeper.setText(self.tr("btn_set_keeper"))
+        self._update_category_button_labels()
         self.table_model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, COLUMN_COUNT - 1)
         self._set_status_text(self._last_status_key, **self._last_status_kwargs)
         self._refresh_summary()
@@ -1474,15 +1518,119 @@ class MainWindow(FramelessMainWindow):
         self.status.setText(self.tr(key, **kwargs))
 
     # ------------------------------------------------------------------
+    # 类型筛选（只隐藏源行；source row 与 worker row_index 永不改变）
+    # ------------------------------------------------------------------
+    def _update_category_metadata(
+        self,
+        rows: list[DedupeRow],
+        result: ScanResult,
+        *,
+        choose_default: bool = False,
+    ) -> None:
+        self._group_categories = {
+            group_id: classify_duplicate_group(group)
+            for group_id, group in enumerate(result.groups, start=1)
+        }
+        categories: list[str] = []
+        for row in rows:
+            if row.group_id:
+                category = self._group_categories.get(row.group_id, "other")
+            else:
+                path = row.primary_path()
+                category = classify_media_type(path) if path is not None else "other"
+            categories.append(category)
+        self._row_categories = categories
+        if choose_default or self.active_category not in {"photo", "video", "other"}:
+            self.active_category = next(
+                (category for category in ("photo", "video", "other")
+                 if any(item == category for item in categories)),
+                "photo",
+            )
+        self._update_category_button_labels()
+        self._apply_category_filter()
+        current_row = self.table.currentIndex().row()
+        if not self._row_is_visible(current_row):
+            candidate_row = next(
+                (index for index, item in enumerate(categories) if item == self.active_category),
+                None,
+            )
+            if candidate_row is None:
+                self.table.clearSelection()
+                self.table.selectionModel().clearCurrentIndex()
+                self.preview_panel.clear()
+            else:
+                self.table.setCurrentIndex(self.table_model.index(candidate_row, COL_PATH))
+
+    def _update_category_button_labels(self) -> None:
+        for category in ("photo", "video", "other"):
+            button = self.category_buttons.get(category)
+            if button is None:
+                continue
+            group_count = sum(1 for value in self._group_categories.values() if value == category)
+            file_count = sum(1 for value in self._row_categories if value == category)
+            button.setText(
+                self.tr(f"category_{category}", groups=group_count, files=file_count)
+            )
+            button.blockSignals(True)
+            try:
+                button.setChecked(category == self.active_category)
+            finally:
+                button.blockSignals(False)
+
+    def set_active_category(self, category: str) -> None:
+        """切换分类只 setRowHidden；不重排、不重建源 rows。"""
+        if category not in ("photo", "video", "other"):
+            return
+        self.active_category = category
+        self._apply_category_filter()
+        self._update_category_button_labels()
+        current = self.table.currentIndex()
+        if not current.isValid() or not self._row_is_visible(current.row()):
+            candidate = next(
+                (i for i, item in enumerate(self._row_categories) if item == category), None
+            )
+            if candidate is None:
+                self.table.clearSelection()
+                self.table.selectionModel().clearCurrentIndex()
+                self.preview_panel.clear()
+            else:
+                self.table.setCurrentIndex(self.table_model.index(candidate, COL_PATH))
+        self._refresh_preview()
+        self._update_action_states()
+
+    def _row_is_visible(self, row_index: int) -> bool:
+        return (
+            0 <= row_index < len(self._row_categories)
+            and self._row_categories[row_index] == self.active_category
+        )
+
+    def _apply_category_filter(self) -> None:
+        for row_index in range(len(self.table_model.rows)):
+            self.table.setRowHidden(row_index, not self._row_is_visible(row_index))
+
+    def _visible_checkable_rows(self) -> list[tuple[int, DedupeRow]]:
+        return [
+            (row_index, row)
+            for row_index, row in enumerate(self.table_model.rows)
+            if self._row_is_visible(row_index) and self.table_model._checkable(row)
+        ]
+
+    # ------------------------------------------------------------------
     # 缩略图 / 预览
     # ------------------------------------------------------------------
     def _thumbnail_for(self, path: Path) -> QPixmap | None:
+        # 先检查路径自身类型；other 不得触发 loader（包括混合扩展名组成员）。
+        if classify_media_type(path) == "other":
+            return None
         try:
             return self.thumbnail_loader.request(path)
         except Exception:
             return None
 
     def _on_thumbnail_ready(self, path: str):
+        # other 文件永远不入缩略图索引；即使旧 loader 信号晚到也不触发无意义刷新
+        if classify_media_type(path) == "other":
+            return
         cells = self._path_cells.get(path)
         if not cells:
             # 核心可能返回未规范化路径，而加载器可能回传规范化后的字符串
@@ -1497,7 +1645,7 @@ class MainWindow(FramelessMainWindow):
         self._path_cells.clear()
         for row_index, row in enumerate(self.table_model.rows):
             path = row.primary_path()
-            if path is None:
+            if path is None or classify_media_type(path) == "other":
                 continue
             for key in {str(path), str(_safe_resolve(path))}:
                 self._path_cells.setdefault(key, []).append((row_index, COL_THUMB))
@@ -1505,32 +1653,173 @@ class MainWindow(FramelessMainWindow):
     def _refresh_preview(self):
         row_index = self.table.currentIndex().row()
         rows = self.table_model.rows
-        if not (0 <= row_index < len(rows)):
+        if not (0 <= row_index < len(rows)) or not self._row_is_visible(row_index):
             self.preview_panel.clear()
             return
         row = rows[row_index]
-        if row.entry is not None:
-            self.preview_panel.set_slot(
-                0, self.tr("preview_selected"), row.entry.path, row.entry.size, row.entry.mtime_ns
-            )
-        elif row.issue_path is not None:
-            self.preview_panel.set_slot(0, self.tr("preview_issue"), row.issue_path, None, None)
-        else:
-            self.preview_panel.set_slot(0, self.tr("preview_selected"), None, None, None)
+        selected_path = row.primary_path()
+        selected_title = self.tr("preview_issue" if row.kind == KIND_ISSUE else "preview_selected")
+        selected_size = row.entry.size if row.entry is not None else None
+        selected_mtime = row.entry.mtime_ns if row.entry is not None else None
+        selected_is_other = selected_path is not None and classify_media_type(selected_path) == "other"
+        if selected_is_other:
+            # 当前行是非媒体时清掉上一行可能残留的两槽内容；随后仍逐槽恢复可预览的 keeper。
+            self.preview_panel.clear()
+        self._set_preview_slot_by_path(0, selected_title, selected_path, selected_size, selected_mtime)
 
-        if row.keeper is not None:
-            self.preview_panel.set_slot(
-                1, self.tr("preview_keeper"), row.keeper.path, row.keeper.size, row.keeper.mtime_ns
-            )
-        else:
-            self.preview_panel.set_slot(1, self.tr("preview_keeper"), None, None, None)
+        keeper_path = row.keeper.path if row.keeper is not None else None
+        keeper_size = row.keeper.size if row.keeper is not None else None
+        keeper_mtime = row.keeper.mtime_ns if row.keeper is not None else None
+        self._set_preview_slot_by_path(
+            1, self.tr("preview_keeper"), keeper_path, keeper_size, keeper_mtime
+        )
+
+    def _set_preview_slot_by_path(
+        self,
+        slot_index: int,
+        title: str,
+        path: Path | None,
+        size_bytes: int | None,
+        mtime_ns: int | None,
+    ) -> None:
+        # 每个槽独立检查路径类型。混合扩展名组中，选中项是 photo 不代表 keeper 也是媒体。
+        if path is not None and classify_media_type(path) == "other":
+            self.preview_panel.set_slot(slot_index, title, None, None, None)
+            return
+        self.preview_panel.set_slot(slot_index, title, path, size_bytes, mtime_ns)
 
     def _on_current_row_changed(self, _current: QModelIndex, _previous: QModelIndex):
         self._refresh_preview()
+        self._refresh_keeper_action()
+        self._update_action_states()
 
     # ------------------------------------------------------------------
     # 右键 / 双击
     # ------------------------------------------------------------------
+    def _refresh_keeper_action(self) -> None:
+        button = getattr(self, "btn_set_keeper", None)
+        if button is None:
+            return
+        row_index = self.table.currentIndex().row()
+        button.setEnabled(self._can_reselect_keeper(row_index))
+
+    def _can_reselect_keeper(self, row_index: int) -> bool:
+        """只做角色/快照资格检查；不读文件内容、不 hash、不做字节比较。"""
+        if (
+            self._is_busy()
+            or not self._has_scan
+            or self._current_result is None
+            or self._scan_cancelled
+            or self._scan_stale
+            or not self._row_is_visible(row_index)
+            or not (0 <= row_index < len(self.table_model.rows))
+        ):
+            return False
+        row = self.table_model.rows[row_index]
+        if row.kind != KIND_DUPLICATE or row.status != "status_pending" or row.entry is None:
+            return False
+        group_index = row.group_id - 1
+        if not (0 <= group_index < len(self._current_result.groups)):
+            return False
+        group = self._current_result.groups[group_index]
+        if row.group_id <= 0 or row.keeper is None:
+            return False
+        # 整组任何已处理/非 pending target 均不得经 keeper 切换重获回收资格。
+        group_rows = [item for item in self.table_model.rows if item.group_id == row.group_id]
+        if not group_rows or any(
+            item.kind == KIND_DUPLICATE and item.status != "status_pending"
+            for item in group_rows
+        ):
+            return False
+        if any(item.kind not in (KIND_KEEPER, KIND_DUPLICATE) for item in group_rows):
+            return False
+        if row.entry.path not in {entry.path for entry in [group.keeper, *group.duplicates]}:
+            return False
+        try:
+            stat = row.entry.path.stat()
+        except OSError:
+            return False
+        return (
+            int(stat.st_size) == int(row.entry.size)
+            and int(stat.st_mtime_ns) == int(row.entry.mtime_ns)
+        )
+
+    def set_selected_as_keeper(self) -> bool:
+        """将当前组的所选副本设为 keeper，原行索引和分类筛选均保持不变。"""
+        row_index = self.table.currentIndex().row()
+        if not self._can_reselect_keeper(row_index):
+            self._notify(
+                self.tr("cannot_start_title"), self.tr("keeper_reselect_invalid"), is_error=True
+            )
+            self._refresh_keeper_action()
+            return False
+
+        row = self.table_model.rows[row_index]
+        group_index = row.group_id - 1
+        old_group = self._current_result.groups[group_index]
+        candidate = row.entry
+        if candidate is None or candidate.path == old_group.keeper.path:
+            return False
+
+        # 纯内存 API 只重排同一内部组；stat 快照守卫已在上方通过。
+        try:
+            new_group = reselect_internal_keeper(old_group, candidate)
+        except ValueError:
+            self._notify(
+                self.tr("cannot_start_title"), self.tr("keeper_reselect_invalid"), is_error=True
+            )
+            return False
+
+        old_keeper_path = old_group.keeper.path
+        new_keeper_path = new_group.keeper.path
+        by_path = {item.entry.path: item for item in self.table_model.rows
+                   if item.group_id == row.group_id and item.entry is not None}
+        old_keeper_row = by_path.get(old_keeper_path)
+        new_keeper_row = by_path.get(new_keeper_path)
+        if old_keeper_row is None or new_keeper_row is None:
+            return False
+
+        # 原 keeper 转为可回收副本并默认勾选；新 keeper 不勾选；其它副本状态原样保留。
+        old_keeper_row.kind = KIND_DUPLICATE
+        old_keeper_row.keeper = new_group.keeper
+        old_keeper_row.checked = True
+        old_keeper_row.status = "status_pending"
+        for item in new_group.duplicates:
+            duplicate_row = by_path.get(item.path)
+            if duplicate_row is None:
+                return False
+            duplicate_row.kind = KIND_DUPLICATE
+            duplicate_row.keeper = new_group.keeper
+        new_keeper_row.kind = KIND_KEEPER
+        new_keeper_row.keeper = new_group.keeper
+        new_keeper_row.checked = False
+        new_keeper_row.status = "status_keep"
+        new_keeper_row.sha256 = new_group.sha256
+        new_keeper_row.group_id = row.group_id
+        # 核心组原子替换；源 rows 不重建，所以 worker row_index 永久稳定。
+        self._current_result.groups[group_index] = new_group
+        self._group_count = len(self._current_result.groups)
+        self._update_category_metadata(
+            self.table_model.rows, self._current_result, choose_default=False
+        )
+        first = min(self.table_model.rows.index(item) for item in by_path.values())
+        last = max(self.table_model.rows.index(item) for item in by_path.values())
+        self.table_model.dataChanged.emit(
+            self.table_model.index(first, 0),
+            self.table_model.index(last, COLUMN_COUNT - 1),
+            [
+                Qt.ItemDataRole.DisplayRole,
+                Qt.ItemDataRole.CheckStateRole,
+                Qt.ItemDataRole.ForegroundRole,
+                Qt.ItemDataRole.FontRole,
+            ],
+        )
+        self._refresh_preview()
+        self._refresh_summary()
+        self._update_action_states()
+        self._notify(self.tr("record_done_title"), self.tr("keeper_changed"))
+        return True
+
     def _context_file_paths(self, _row: int, selected_rows: list[int]) -> list[Path]:
         rows = self.table_model.rows
         paths: list[Path] = []
@@ -1596,13 +1885,13 @@ class MainWindow(FramelessMainWindow):
             and bool(self._recyclable_rows())
         )
         self.btn_recycle.setEnabled(can_recycle)
-        busy = busy or self._record_thread is not None
         has_rows = bool(self.table_model.rows)
         batch_enabled = (
             (not busy) and has_rows and not self._scan_stale and not self._scan_cancelled
         )
         for button in (self.btn_select_all, self.btn_select_none, self.btn_invert):
             button.setEnabled(batch_enabled)
+        self._refresh_keeper_action()
         # 导出用扫描时的快照；只要有一次完整结果就可导出（记录里保留 cancelled/stale）
         self.btn_export_record.setEnabled((not busy) and self._current_result is not None)
         self.btn_import_record.setEnabled(not busy)
@@ -1653,8 +1942,8 @@ class MainWindow(FramelessMainWindow):
     # 批量勾选（仅合法待回收行；保留/异常/碰撞/已处理/取消/失效行一律不变）
     # ------------------------------------------------------------------
     def _selectable_rows(self) -> list[DedupeRow]:
-        """可被批量勾选的行：与表格模型 ``_checkable`` 判定完全一致。"""
-        return [row for row in self.table_model.rows if self.table_model._checkable(row)]
+        """当前显示分类中可回收的行；隐藏分类的勾选状态保持不变。"""
+        return [row for _index, row in self._visible_checkable_rows()]
 
     def _apply_checked(self, targets: list[DedupeRow], checked: bool) -> int:
         changed = 0
@@ -1895,6 +2184,7 @@ class MainWindow(FramelessMainWindow):
             self.table.setUpdatesEnabled(True)
         self._refresh_preview()
         self._refresh_summary()
+        self._update_category_metadata(rows, result, choose_default=True)
         self.progress.setValue(0)
         if self._scan_cancelled:
             self._set_status_text("record_import_cancelled")
@@ -2046,6 +2336,7 @@ class MainWindow(FramelessMainWindow):
             self.table.setUpdatesEnabled(True)
         self._refresh_preview()
         self._refresh_summary()
+        self._update_category_metadata(rows, result, choose_default=True)
 
         duplicate_count = sum(1 for row in rows if row.kind == KIND_DUPLICATE)
         if self._scan_cancelled:
@@ -2119,7 +2410,13 @@ class MainWindow(FramelessMainWindow):
     def _reset_results(self):
         self.thumbnail_loader.clear()
         self._path_cells.clear()
+        self._row_categories = []
+        self._group_categories.clear()
+        self.active_category = "photo"
+        self._has_scan = False
         self.table_model.reset_rows([])
+        self._update_category_button_labels()
+        self._apply_category_filter()
         self.preview_panel.clear()
         self._recycled_count = 0
         self._skipped_count = 0
@@ -2358,6 +2655,10 @@ class MainWindow(FramelessMainWindow):
     def _release_thumbnail_loader(self):
         try:
             self.thumbnail_loader.shutdown()
+        except Exception:
+            pass
+        try:
+            self.preview_panel.shutdown()
         except Exception:
             pass
 

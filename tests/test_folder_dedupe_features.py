@@ -19,23 +19,30 @@ from pathlib import Path
 from unittest import mock
 
 _TMP_APPDATA = tempfile.mkdtemp(prefix="test-folder-dedupe-appdata-")
+_TMP_LOCALAPPDATA = tempfile.mkdtemp(prefix="test-folder-dedupe-localappdata-")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["APPDATA"] = _TMP_APPDATA
+os.environ["LOCALAPPDATA"] = _TMP_LOCALAPPDATA
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from PyQt6.QtCore import QEvent, Qt  # noqa: E402
+from PyQt6.QtGui import QImage  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 import folder_dedupe_gui as g  # noqa: E402
 import duplicate_scan_core  # noqa: E402
+import media_thumbnail  # noqa: E402
 from duplicate_scan_core import (  # noqa: E402
     DuplicateGroup,
     FileEntry,
     RecycleOutcome,
     ScanResult,
+    classify_duplicate_group,
+    classify_media_type,
+    reselect_internal_keeper,
 )
 from scan_record_core import ScanRecord, load_record, save_record  # noqa: E402
 
@@ -58,7 +65,9 @@ def _pump(app: QApplication, predicate, timeout: float = 15.0) -> bool:
     return predicate()
 
 
-class FolderDedupePageTests(unittest.TestCase):
+class FolderDedupeFixtureMixin:
+    """旧回归与新验收共享的 fixture，不包含 unittest 测试方法。"""
+
     @classmethod
     def setUpClass(cls):
         cls.app = _app()
@@ -75,36 +84,39 @@ class FolderDedupePageTests(unittest.TestCase):
 
         sys.excepthook = hook
         self.addCleanup(setattr, sys, "excepthook", self._orig_hook)
-
         self.notifications: list[tuple[str, str]] = []
         for level in ("error", "success"):
             patcher = mock.patch.object(
                 g.InfoBar,
                 level,
-                staticmethod(lambda **kw: self.notifications.append((level, str(kw.get("content"))))),
+                staticmethod(
+                    lambda _level=level, **kw: self.notifications.append(
+                        (_level, str(kw.get("content")))
+                    )
+                ),
             )
             patcher.start()
             self.addCleanup(patcher.stop)
-
         self.window = g.MainWindow()
         self.addCleanup(self._teardown_window)
 
     def _teardown_window(self):
         window = self.window
         try:
+            window._shutdown_workers()
             window._release_thumbnail_loader()
         except Exception:
             pass
-        # 产品自身的右键菜单/过滤器随窗口真实析构（不摘 filter、不重建 helper）
+        # 使用产品真实析构路径，保留右键菜单/事件过滤器生命周期。
         window.close()
         window.deleteLater()
         self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.app.processEvents()
+        self.assertFalse(self.errors, self.errors)
 
-    # ---- 辅助 ---------------------------------------------------------
     def _make_duplicates(self) -> Path:
         root = self.tmp / "album"
-        payload = b"\xff\xd8\xff\xe0" + b"duplicate-payload" * 64
+        payload = b"\\xff\\xd8\\xff\\xe0" + b"duplicate-payload" * 64
         for sub in ("a", "b", "c"):
             (root / sub).mkdir(parents=True, exist_ok=True)
             (root / sub / "photo.jpg").write_bytes(payload)
@@ -118,7 +130,7 @@ class FolderDedupePageTests(unittest.TestCase):
             lambda: not self.window.is_scanning and self.window._scan_thread is None,
         )
         self.assertTrue(ok, "扫描未在超时内完成")
-        self.app.processEvents()
+        self.assertTrue(_pump(self.app, lambda: not self.window._is_busy()), "扫描收尾未排空")
 
     def _duplicate_rows(self):
         return [row for row in self.window.table_model.rows if row.kind == g.KIND_DUPLICATE]
@@ -126,6 +138,15 @@ class FolderDedupePageTests(unittest.TestCase):
     def _keeper_rows(self):
         return [row for row in self.window.table_model.rows if row.kind == g.KIND_KEEPER]
 
+    def _import(self, record_path: Path) -> bool:
+        with mock.patch.object(
+            g.QFileDialog, "getOpenFileName", return_value=(str(record_path), "")
+        ):
+            self.window.btn_import_record.click()
+            return _pump(self.app, lambda: self.window._record_thread is None)
+
+
+class FolderDedupePageTests(FolderDedupeFixtureMixin, unittest.TestCase):
     # ---- 批量勾选 -----------------------------------------------------
     def test_real_scan_and_batch_selection_protects_illegal_rows(self):
         root = self._make_duplicates()
@@ -517,6 +538,482 @@ class FolderDedupePageTests(unittest.TestCase):
         self.window._apply_language()
         self.assertEqual(self.window.btn_invert.text(), "反选")
         self.assertFalse(self.errors, self.errors)
+
+
+class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
+    """R1-R5 GUI acceptance for the frozen category/keeper button contract."""
+
+    def setUp(self):
+        super().setUp()
+        self.window.byte_verify_check.setChecked(True)
+
+        def fast_fixture_decode(_path, size, *, stop_event=None):
+            # 类型/keeper UI 测试不验证真实编码；保留 ThumbnailLoader.request、
+            # PreviewPanel 和其正向 spy，避免伪 MP4 启动 Shell/Qt 视频解码线程。
+            if stop_event is not None and stop_event.is_set():
+                return None, "cancelled"
+            return QImage(max(1, min(2, int(size))), max(1, min(2, int(size))), QImage.Format.Format_RGB32), ""
+
+        self._thumbnail_decode_patch = mock.patch.object(
+            media_thumbnail, "load_thumbnail_image_detail", side_effect=fast_fixture_decode
+        )
+        self._thumbnail_decode_patch.start()
+        self.addCleanup(self._thumbnail_decode_patch.stop)
+        self.addCleanup(self._shutdown_fixture_loaders)
+
+    def _shutdown_fixture_loaders(self):
+        """关闭 table/preview 两套真实 loader，并有界等待 worker 退出。"""
+        loaders = [self.window.thumbnail_loader, self.window.preview_panel.loader()]
+        workers = [worker for loader in loaders for worker in list(loader._workers)]
+        for loader in loaders:
+            loader.shutdown()
+        self.assertTrue(
+            _pump(self.app, lambda: not any(worker.is_alive() for worker in workers), timeout=5.0),
+            "fixture 的 thumbnail worker 未退出",
+        )
+        self.assertTrue(all(loader._stopped for loader in loaders))
+
+    def _make_typed_duplicates(self) -> Path:
+        root = self.tmp / "typed-album"
+        fixtures = {
+            "photo": ("photo.jpg", b"photo-payload-" * 80),
+            "video": ("video.mp4", b"video-payload-" * 90),
+            "other": ("data.bin", b"other-payload-" * 100),
+        }
+        for category, (filename, payload) in fixtures.items():
+            for name in ("a", "b", "c"):
+                folder = root / category / name
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / filename).write_bytes(payload)
+        return root
+
+    def _group_rows(self, group_id: int):
+        return [
+            (index, row)
+            for index, row in enumerate(self.window.table_model.rows)
+            if row.group_id == group_id
+        ]
+
+    def _category_for_group(self, group_id: int) -> str:
+        result = self.window._current_result
+        self.assertIsNotNone(result)
+        return classify_duplicate_group(result.groups[group_id - 1])
+
+    def _category_labels(self, category: str) -> tuple[str, str]:
+        return {
+            "photo": ("照片", "Photo"),
+            "video": ("视频", "Video"),
+            "other": ("其他", "Other"),
+        }[category]
+
+    def _typed_scan(self) -> Path:
+        root = self._make_typed_duplicates()
+        self._run_scan(root)
+        self.assertEqual(set(self.window.category_buttons), {"photo", "video", "other"})
+        return root
+
+    def test_three_category_buttons_show_correct_counts_and_preserve_source_rows(self):
+        self._typed_scan()
+        result = self.window._current_result
+        self.assertIsNotNone(result)
+        source_before = [row.primary_path() for row in self.window.table_model.rows]
+        expected_groups = {category: 0 for category in ("photo", "video", "other")}
+        expected_files = {category: 0 for category in ("photo", "video", "other")}
+        group_categories = {}
+        for group_id, group in enumerate(result.groups, start=1):
+            category = classify_duplicate_group(group)
+            group_categories[group_id] = category
+            expected_groups[category] += 1
+            expected_files[category] += 1 + len(group.duplicates)
+
+        for category, button in self.window.category_buttons.items():
+            zh_label, en_label = self._category_labels(category)
+            text = button.text()
+            self.assertTrue(zh_label in text or en_label in text, (category, text))
+            self.assertIn(str(expected_groups[category]), text, (category, text))
+            self.assertIn(str(expected_files[category]), text, (category, text))
+            button.click()
+            self.app.processEvents()
+            for index, row in enumerate(self.window.table_model.rows):
+                if row.group_id:
+                    self.assertEqual(
+                        self.window.table.isRowHidden(index),
+                        group_categories[row.group_id] != category,
+                        (category, index, row.group_id),
+                    )
+
+        self.assertEqual(
+            [row.primary_path() for row in self.window.table_model.rows], source_before,
+            "筛选必须只隐藏 source row，不得重建或重排路径行",
+        )
+        self.assertEqual(
+            len(self.window.table_model.rows), len(source_before),
+            "筛选后 worker 使用的 source row 数量必须稳定",
+        )
+
+    def test_other_rows_never_request_thumbnail_and_clear_old_preview(self):
+        self._typed_scan()
+        result = self.window._current_result
+        self.assertIsNotNone(result)
+        other_group_id = next(
+            group_id
+            for group_id in range(1, len(result.groups) + 1)
+            if self._category_for_group(group_id) == "other"
+        )
+        photo_group_id = next(
+            group_id
+            for group_id in range(1, len(result.groups) + 1)
+            if self._category_for_group(group_id) == "photo"
+        )
+        photo_index = self._group_rows(photo_group_id)[0][0]
+        other_index = self._group_rows(other_group_id)[0][0]
+
+        self.window.category_buttons["photo"].click()
+        self.window.table.selectRow(photo_index)
+        self.app.processEvents()
+        request = mock.Mock(wraps=self.window.thumbnail_loader.request)
+        with mock.patch.object(self.window.thumbnail_loader, "request", request):
+            # DecorationRole 是实际表格渲染路径；photo 可请求，other 不可请求。
+            self.window.table_model.data(
+                self.window.table_model.index(photo_index, g.COL_THUMB),
+                Qt.ItemDataRole.DecorationRole,
+            )
+            self.assertGreater(request.call_count, 0, "photo 行应允许缩略图请求")
+            photo_requests = request.call_count
+            self.window.category_buttons["other"].click()
+            self.window.table.selectRow(other_index)
+            self.window.table_model.data(
+                self.window.table_model.index(other_index, g.COL_THUMB),
+                Qt.ItemDataRole.DecorationRole,
+            )
+            self.app.processEvents()
+            self.assertEqual(request.call_count, photo_requests, "other 行不得请求缩略图")
+            self.assertTrue(
+                all(slot.path is None for slot in self.window.preview_panel._slot_widgets),
+                "选中 other 后两个预览槽都应清空路径，不得残留旧图片",
+            )
+
+    def test_video_preview_loader_threads_stop_on_shutdown(self):
+        """选中伪视频触发真实 loader request/preview 后，两套 loader 都应退出。"""
+        self._typed_scan()
+        result = self.window._current_result
+        video_group_id = next(
+            group_id
+            for group_id in range(1, len(result.groups) + 1)
+            if self._category_for_group(group_id) == "video"
+        )
+        row_index = self._group_rows(video_group_id)[0][0]
+        self.window.category_buttons["video"].click()
+        self.window.table.selectRow(row_index)
+        self.window.table_model.data(
+            self.window.table_model.index(row_index, g.COL_THUMB),
+            Qt.ItemDataRole.DecorationRole,
+        )
+        self.app.processEvents()
+        table_loader = self.window.thumbnail_loader
+        preview_loader = self.window.preview_panel.loader()
+        workers = list(table_loader._workers) + list(preview_loader._workers)
+        self.assertTrue(workers, "视频缩略图请求应启动真实 loader worker")
+        self.assertFalse(table_loader._stopped)
+        self.assertFalse(preview_loader._stopped)
+        self.window._release_thumbnail_loader()
+        self.assertTrue(table_loader._stopped)
+        self.assertTrue(preview_loader._stopped)
+        self.assertTrue(
+            _pump(self.app, lambda: not any(worker.is_alive() for worker in workers), timeout=5.0),
+            "页面 cleanup 后遗留缩略图线程",
+        )
+
+    def test_set_keeper_button_changes_core_group_and_real_worker_uses_new_keeper(self):
+        self._typed_scan()
+        result = self.window._current_result
+        self.assertIsNotNone(result)
+        group_id = next(
+            group_id
+            for group_id in range(1, len(result.groups) + 1)
+            if self._category_for_group(group_id) == "photo"
+        )
+        group_rows = self._group_rows(group_id)
+        self.assertGreaterEqual(len(group_rows), 3)
+        ordered = sorted(group_rows, key=lambda item: str(item[1].entry.path).casefold())
+        old_keeper = next(row for _index, row in ordered if row.kind == g.KIND_KEEPER)
+        candidates = [item for item in ordered if item[1].kind == g.KIND_DUPLICATE]
+        new_index, new_keeper_row = candidates[0]
+        _other_index, other_row = candidates[1]
+        # 本用例只回收照片组：其它分类默认全选项必须明确取消，不能把隐藏行算作产品缺陷。
+        for row in self._duplicate_rows():
+            if row.group_id != group_id:
+                row.checked = False
+        other_row.checked = False
+        source_before = [row.primary_path() for row in self.window.table_model.rows]
+
+        self.window.table.selectRow(new_index)
+        self.assertTrue(self.window.btn_set_keeper.isEnabled())
+        self.window.btn_set_keeper.click()
+        self.app.processEvents()
+
+        updated_group = self.window._current_result.groups[group_id - 1]
+        self.assertEqual(updated_group.keeper.path, new_keeper_row.entry.path)
+        self.assertEqual(
+            {entry.path for entry in updated_group.duplicates},
+            {old_keeper.entry.path, other_row.entry.path},
+        )
+        self.assertEqual(
+            [row.primary_path() for row in self.window.table_model.rows], source_before,
+            "切 keeper 不得重建 source rows",
+        )
+        self.assertEqual(new_keeper_row.kind, g.KIND_KEEPER)
+        self.assertEqual(new_keeper_row.status, "status_keep")
+        self.assertFalse(new_keeper_row.checked)
+        self.assertEqual(old_keeper.kind, g.KIND_DUPLICATE)
+        self.assertEqual(old_keeper.status, "status_pending")
+        self.assertTrue(old_keeper.checked)
+        self.assertFalse(other_row.checked, "其它副本的合法 checked 状态必须保留")
+        for _index, row in group_rows:
+            self.assertEqual(row.keeper.path, new_keeper_row.entry.path)
+
+        calls = []
+
+        def fake_recycle(target, keeper, *, byte_verify, should_cancel=None):
+            calls.append((target.path, keeper.path, byte_verify))
+            return RecycleOutcome(target=target, status="recycled")
+
+        with mock.patch.object(g, "recycle_duplicate", fake_recycle), \
+                mock.patch.object(g.QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            self.window.btn_recycle.click()
+            self.assertTrue(
+                _pump(self.app, lambda: self.window._recycle_thread is None and not self.window._is_busy()),
+                "真实回收 worker 未结束",
+            )
+        self.assertTrue(calls)
+        self.assertEqual({target for target, _keeper, _verify in calls}, {old_keeper.entry.path})
+        self.assertTrue(all(keeper == new_keeper_row.entry.path for _target, keeper, _verify in calls))
+        self.assertTrue(all(verify for _target, _keeper, verify in calls))
+
+    def test_keeper_change_record_round_trip_preserves_roles_and_states(self):
+        self._typed_scan()
+        result = self.window._current_result
+        group_id = next(
+            group_id
+            for group_id in range(1, len(result.groups) + 1)
+            if self._category_for_group(group_id) == "photo"
+        )
+        rows = self._group_rows(group_id)
+        old_keeper = next(row for _index, row in rows if row.kind == g.KIND_KEEPER)
+        candidate_index, candidate = next(
+            (index, row) for index, row in rows if row.kind == g.KIND_DUPLICATE
+        )
+        self.window.table.selectRow(candidate_index)
+        self.window.btn_set_keeper.click()
+        target = self.tmp / "keeper-roundtrip.json"
+        with mock.patch.object(g.QFileDialog, "getSaveFileName", return_value=(str(target), "")):
+            self.window.btn_export_record.click()
+            self.assertTrue(_pump(self.app, lambda: self.window._record_thread is None))
+        self.assertTrue(target.exists())
+        saved = load_record(target, expected_mode="internal")
+        self.assertEqual(saved.result.groups[group_id - 1].keeper.path, candidate.entry.path)
+
+        self.window._reset_results()
+        self.assertTrue(self._import(target))
+        imported = self.window._current_result.groups[group_id - 1]
+        self.assertEqual(imported.keeper.path, candidate.entry.path)
+        imported_rows = self._group_rows(group_id)
+        self.assertEqual(
+            {row.entry.path for _index, row in imported_rows if row.kind == g.KIND_DUPLICATE},
+            {entry.path for entry in imported.duplicates},
+        )
+        self.assertTrue(self.window._record_imported)
+        self.window.byte_verify_check.setChecked(False)
+        # 仅让当前照片组参与后续真实回收按钮链路；隐藏分类 checked 明确取消。
+        for row in self.window.table_model.rows:
+            if row.group_id != group_id and row.kind == g.KIND_DUPLICATE:
+                row.checked = False
+        self.window.category_buttons["photo"].click()
+        self.window.btn_select_all.click()
+
+        calls = []
+
+        def fake_recycle(target, keeper, *, byte_verify, should_cancel=None):
+            calls.append({"target": target.path, "keeper": keeper.path,
+                          "byte_verify": byte_verify})
+            return RecycleOutcome(target=target, status="recycled")
+
+        with mock.patch.object(g, "recycle_duplicate", fake_recycle), mock.patch.object(
+            g.QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+        ):
+            self.window.btn_recycle.click()
+            self.assertTrue(
+                _pump(
+                    self.app,
+                    lambda: self.window._recycle_thread is None and not self.window._is_busy(),
+                ),
+                "导入记录后的回收 worker 未结束",
+            )
+        self.assertEqual(
+            {call["target"] for call in calls},
+            {entry.path for entry in imported.duplicates},
+        )
+        self.assertTrue(all(call["keeper"] == candidate.entry.path for call in calls))
+        self.assertTrue(all(call["byte_verify"] for call in calls))
+
+    def test_visible_batch_buttons_only_change_active_category(self):
+        self._typed_scan()
+        result = self.window._current_result
+        category_group = {
+            self._category_for_group(group_id): group_id
+            for group_id in range(1, len(result.groups) + 1)
+        }
+        self.assertEqual(set(category_group), {"photo", "video", "other"})
+        self.window.category_buttons["photo"].click()
+        before = [row.checked for row in self.window.table_model.rows]
+        self.window.category_buttons["video"].click()
+        visible_before = [
+            row.checked
+            for index, row in enumerate(self.window.table_model.rows)
+            if not self.window.table.isRowHidden(index) and row.is_checkable()
+        ]
+        self.window.btn_invert.click()
+        self.app.processEvents()
+        visible_after = [
+            row.checked
+            for index, row in enumerate(self.window.table_model.rows)
+            if not self.window.table.isRowHidden(index) and row.is_checkable()
+        ]
+        self.assertEqual(visible_after, [not checked for checked in visible_before])
+        for index, row in enumerate(self.window.table_model.rows):
+            if self.window.table.isRowHidden(index):
+                self.assertEqual(row.checked, before[index], (index, row.primary_path()))
+
+    def test_embedded_mode_and_english_refresh_all_new_controls(self):
+        from unified_gui import EmbeddedPage
+
+        embedded = g.MainWindow(embedded=True)
+        host = EmbeddedPage("dedupeTest", embedded)
+        host.resize(1360, 880)
+        try:
+            self.assertEqual(set(embedded.category_buttons), {"photo", "video", "other"})
+            host.show()
+            self.app.processEvents()
+            self.assertFalse(
+                embedded.language_combo.isVisible(), "内嵌页不应显示独立语言选择器"
+            )
+            self.assertTrue(all(button.isVisible() for button in embedded.category_buttons.values()))
+            self.assertTrue(embedded.btn_set_keeper.isVisible())
+            self.assertFalse(embedded.btn_set_keeper.isEnabled(), "未选中合法副本前设为保留应禁用")
+
+            embedded.lang = "en"
+            embedded._apply_language()
+            for category, button in embedded.category_buttons.items():
+                expected = {"photo": "Photos", "video": "Videos", "other": "Other"}[category]
+                self.assertIn(expected, button.text())
+                self.assertIn("groups", button.text())
+                self.assertIn("files", button.text())
+            self.assertEqual(embedded.btn_set_keeper.text(), "Set as keeper")
+            self.assertEqual(embedded.btn_select_all.text(), "Select all")
+            self.assertEqual(embedded.btn_select_none.text(), "Select none")
+            self.assertEqual(embedded.btn_invert.text(), "Invert")
+            self.assertEqual(embedded.btn_export_record.text(), "Export record")
+            self.assertEqual(embedded.btn_import_record.text(), "Import record")
+
+            embedded.lang = "zh"
+            embedded._apply_language()
+            expected_zh = {"photo": "照片", "video": "视频", "other": "其他"}
+            for category, button in embedded.category_buttons.items():
+                self.assertIn(expected_zh[category], button.text())
+            self.assertEqual(embedded.btn_set_keeper.text(), "设为保留")
+            self.assertEqual(embedded.btn_select_all.text(), "全选")
+            self.assertEqual(embedded.btn_select_none.text(), "全不选")
+            self.assertEqual(embedded.btn_invert.text(), "反选")
+            self.assertEqual(embedded.btn_export_record.text(), "导出记录")
+            self.assertEqual(embedded.btn_import_record.text(), "导入记录")
+        finally:
+            # host 拥有 embedded，只显式停 loader 后销毁 host，不双重删除窗口。
+            embedded._shutdown_workers()
+            embedded._release_thumbnail_loader()
+            loaders = (embedded.thumbnail_loader, embedded.preview_panel.loader())
+            workers = [worker for loader in loaders for worker in list(loader._workers)]
+            host.close()
+            host.deleteLater()
+            self.assertTrue(
+                _pump(self.app, lambda: not any(worker.is_alive() for worker in workers), timeout=5.0),
+                "内嵌关闭后遗留缩略图线程",
+            )
+            self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            self.app.processEvents()
+
+    def test_core_media_and_keeper_contracts_are_pure_and_stable(self):
+        root = self._make_typed_duplicates()
+        photo = root / "photo" / "a" / "photo.jpg"
+        video = root / "video" / "a" / "video.mp4"
+        other = root / "other" / "a" / "data.bin"
+        self.assertEqual(classify_media_type(photo), "photo")
+        self.assertEqual(classify_media_type(video), "video")
+        self.assertEqual(classify_media_type(other), "other")
+        self.assertEqual(classify_media_type(Path("MIXED.MP4")), "video")
+        self.assertEqual(classify_media_type(Path("no-extension")), "other")
+
+        self._run_scan(root)
+        result = self.window._current_result
+        photo_group = next(
+            group for group in result.groups if classify_duplicate_group(group) == "photo"
+        )
+        original_keeper_path = photo_group.keeper.path
+        candidate = photo_group.duplicates[0]
+        changed = reselect_internal_keeper(photo_group, candidate)
+        self.assertEqual(changed.keeper.path, candidate.path)
+        self.assertEqual(changed.sha256, photo_group.sha256)
+        self.assertEqual(changed.size, photo_group.size)
+        self.assertEqual(photo_group.keeper.path, original_keeper_path)
+        self.assertNotEqual(changed.keeper.path, original_keeper_path)
+
+    def test_legacy_v1_single_keeper_group_imports_via_real_button(self):
+        """兼容 schema v1 的单成员组：duplicates=[] 仍能真实导入和展示。"""
+        root = self.tmp / "legacy-single"
+        root.mkdir()
+        photo_path = root / "only.jpg"
+        photo_path.write_bytes(b"single-member-photo")
+        stat = photo_path.stat()
+        entry = FileEntry(
+            path=photo_path,
+            root=root,
+            size=stat.st_size,
+            mtime_ns=stat.st_mtime_ns,
+            file_id=(int(stat.st_dev), int(stat.st_ino)),
+        )
+        record = ScanRecord(
+            mode="internal",
+            root_a=root,
+            root_b=None,
+            scope="all",
+            keep_strategy="shallowest",
+            result=ScanResult(
+                groups=[DuplicateGroup(keeper=entry, duplicates=[], sha256="a" * 64,
+                                       size=entry.size)],
+                scanned_files=1,
+                hashed_files=1,
+                hashed_bytes=entry.size,
+            ),
+            row_states={
+                os.path.normcase(os.path.abspath(str(photo_path))): {
+                    "checked": False,
+                    "status": "status_keep",
+                }
+            },
+            created_at="2026-11-20T00:00:00",
+        )
+        record_path = self.tmp / "legacy-v1-single-keeper.json"
+        save_record(record_path, record)
+
+        self.assertTrue(self._import(record_path), "旧 v1 单 keeper 记录应由真实导入按钮载入")
+        loaded_group = self.window._current_result.groups[0]
+        self.assertEqual(loaded_group.keeper.path, photo_path)
+        self.assertEqual(loaded_group.duplicates, [])
+        self.assertEqual(len(self.window.table_model.rows), 1)
+        keeper_row = self.window.table_model.rows[0]
+        self.assertEqual(keeper_row.kind, g.KIND_KEEPER)
+        self.assertFalse(keeper_row.checked)
+        self.assertEqual(classify_duplicate_group(loaded_group), "photo")
+        self.assertTrue(self.window._record_imported)
 
 
 class RecycleWorkerVerifyTests(unittest.TestCase):

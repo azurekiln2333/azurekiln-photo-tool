@@ -1,0 +1,4 @@
+{"file":".trellis/spec/python/quality-guidelines.md","reason":"跨盘、隔离依赖与全量测试"}
+{"file":".trellis/spec/pyqt/quality-guidelines.md","reason":"实际按钮和独立/内嵌布局"}
+{"file":".trellis/spec/python/duplicate-verification.md","reason":"保护保留项与复核"}
+{"file":".trellis/spec/python/scan-records.md","reason":"导出导入角色严格验证"}

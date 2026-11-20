@@ -17,6 +17,7 @@ import inspect
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -896,6 +897,136 @@ class EndToEndTests(TempCase):
 # ---------------------------------------------------------------------------
 
 
+class CoreClassificationAndKeeperTests(TempCase):
+    def _snapshot(self, name: str, *, root: Path | None = None, size: int = 7,
+                  mtime_ns: int = 11, file_id: tuple[int, int] = (1, 2)) -> FileEntry:
+        scan_root = root or self.a
+        return FileEntry(scan_root / name, scan_root, size, mtime_ns, file_id)
+
+    def test_every_media_extension_has_one_explicit_category(self) -> None:
+        self.assertTrue(core.VIDEO_EXTENSIONS <= core.MEDIA_EXTENSIONS)
+        self.assertEqual(
+            {suffix for suffix in core.MEDIA_EXTENSIONS
+             if core.classify_media_type(Path("not-created" + suffix)) == "video"},
+            core.VIDEO_EXTENSIONS,
+        )
+        self.assertEqual(
+            {suffix for suffix in core.MEDIA_EXTENSIONS
+             if core.classify_media_type(Path("not-created" + suffix)) == "photo"},
+            core.MEDIA_EXTENSIONS - core.VIDEO_EXTENSIONS,
+        )
+        self.assertEqual(len(core.MEDIA_EXTENSIONS), 55)
+        self.assertEqual(len(core.VIDEO_EXTENSIONS), 22)
+
+    def test_media_type_is_case_insensitive_and_unknown_is_other(self) -> None:
+        cases = {
+            "PHOTO.JpEg": "photo",
+            "clip.MOV": "video",
+            "archive.tar.gz": "other",
+            "no-extension": "other",
+            ".profile": "other",
+            "camera.photo.JPG": "photo",
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(core.classify_media_type(name), expected)
+
+    def test_classification_only_uses_path_text(self) -> None:
+        with mock.patch.object(Path, "stat", side_effect=AssertionError("stat called")), \
+             mock.patch("builtins.open", side_effect=AssertionError("open called")):
+            self.assertEqual(core.classify_media_type(self.tmp / "missing.mp4"), "video")
+            self.assertEqual(core.classify_media_type(self.tmp / "missing.unknown"), "other")
+
+    def test_duplicate_group_classification_uses_stable_priority(self) -> None:
+        photo = self._snapshot("a.jpg")
+        video = self._snapshot("b.mp4")
+        other = self._snapshot("c.txt")
+        photo_video = DuplicateGroup(photo, [video], "a" * 64, photo.size)
+        video_other = DuplicateGroup(video, [other], "b" * 64, video.size)
+        other_only = DuplicateGroup(other, [self._snapshot("d.pdf")], "c" * 64, other.size)
+        self.assertEqual(core.classify_duplicate_group(photo_video), "photo")
+        self.assertEqual(core.classify_duplicate_group(video_other), "video")
+        self.assertEqual(core.classify_duplicate_group(other_only), "other")
+        singleton_photo = DuplicateGroup(photo, [], "d" * 64, photo.size)
+        singleton_video = DuplicateGroup(video, [], "e" * 64, video.size)
+        singleton_other = DuplicateGroup(other, [], "f" * 64, other.size)
+        self.assertEqual(core.classify_duplicate_group(singleton_photo), "photo")
+        self.assertEqual(core.classify_duplicate_group(singleton_video), "video")
+        self.assertEqual(core.classify_duplicate_group(singleton_other), "other")
+        reselected = core.reselect_internal_keeper(photo_video, video)
+        self.assertEqual(core.classify_duplicate_group(reselected), "photo")
+
+    def test_reselect_keeper_returns_new_group_and_preserves_input(self) -> None:
+        a = self._snapshot("a.jpg")
+        b = self._snapshot("b.jpg", mtime_ns=12, file_id=(1, 3))
+        c = self._snapshot("c.jpg", mtime_ns=13, file_id=(1, 4))
+        original_duplicates = [c, b]
+        group = DuplicateGroup(a, original_duplicates, "e" * 64, a.size)
+
+        changed = core.reselect_internal_keeper(group, b)
+
+        self.assertIsNot(changed, group)
+        self.assertIs(changed.keeper, b)
+        self.assertEqual(changed.duplicates, [a, c])
+        self.assertEqual(changed.sha256, group.sha256)
+        self.assertEqual(changed.size, group.size)
+        self.assertIs(group.keeper, a)
+        self.assertIs(group.duplicates, original_duplicates)
+        self.assertEqual(group.duplicates, [c, b])
+        self.assertIs(core.reselect_internal_keeper(group, a).keeper, a)
+
+    def test_reselect_requires_full_member_snapshot(self) -> None:
+        keeper = self._snapshot("a.jpg")
+        member = self._snapshot("b.jpg", mtime_ns=12, file_id=(1, 3))
+        group = DuplicateGroup(keeper, [member], "f" * 64, keeper.size)
+        altered = (
+            replace(member, path=self.a / "renamed.jpg"),
+            replace(member, root=self.b),
+            replace(member, size=member.size + 1),
+            replace(member, mtime_ns=member.mtime_ns + 1),
+            replace(member, file_id=(9, 9)),
+        )
+        for candidate in altered:
+            with self.subTest(candidate=candidate), self.assertRaisesRegex(
+                ValueError, "keeper_not_group_member"
+            ):
+                core.reselect_internal_keeper(group, candidate)
+
+    def test_reselect_rejects_cross_root_bad_size_and_duplicate_paths(self) -> None:
+        singleton = DuplicateGroup(self._snapshot("solo.jpg"), [], "0" * 64, 7)
+        with self.assertRaisesRegex(ValueError, "group_empty"):
+            core.reselect_internal_keeper(singleton, singleton.keeper)
+        a = self._snapshot("a.jpg")
+        foreign = self._snapshot("b.jpg", root=self.b)
+        with self.assertRaisesRegex(ValueError, "group_cross_root"):
+            core.reselect_internal_keeper(
+                DuplicateGroup(a, [foreign], "1" * 64, a.size), foreign
+            )
+        wrong_size = replace(self._snapshot("c.jpg"), size=a.size + 1)
+        with self.assertRaisesRegex(ValueError, "group_size_mismatch"):
+            core.reselect_internal_keeper(
+                DuplicateGroup(a, [wrong_size], "2" * 64, a.size), a
+            )
+        duplicate_path = replace(a, mtime_ns=a.mtime_ns + 1)
+        with self.assertRaisesRegex(ValueError, "group_duplicate_path"):
+            core.reselect_internal_keeper(
+                DuplicateGroup(a, [duplicate_path], "3" * 64, a.size), a
+            )
+        compare_target = self._snapshot("from-b.jpg", root=self.b)
+        compare_group = DuplicateGroup(a, [compare_target], "4" * 64, a.size)
+        with self.assertRaisesRegex(ValueError, "group_cross_root"):
+            core.reselect_internal_keeper(compare_group, compare_target)
+
+    def test_keeper_reselection_does_not_touch_filesystem(self) -> None:
+        a = self._snapshot("a.jpg")
+        b = self._snapshot("b.jpg", mtime_ns=12, file_id=(1, 3))
+        group = DuplicateGroup(a, [b], "5" * 64, a.size)
+        with mock.patch.object(Path, "stat", side_effect=AssertionError("stat called")), \
+             mock.patch("builtins.open", side_effect=AssertionError("open called")):
+            changed = core.reselect_internal_keeper(group, b)
+        self.assertIs(changed.keeper, b)
+
+
 class ContractShapeTests(unittest.TestCase):
     def test_public_signatures(self) -> None:
         self.assertEqual(
@@ -925,6 +1056,18 @@ class ContractShapeTests(unittest.TestCase):
             ["root", "scope", "keep_strategy", "threads", "should_cancel", "on_progress"],
         )
         self.assertEqual(inner.parameters["keep_strategy"].default, "shallowest")
+        self.assertEqual(
+            str(inspect.signature(core.classify_media_type)),
+            "(path: 'Path | str') -> 'MediaType'",
+        )
+        self.assertEqual(
+            str(inspect.signature(core.classify_duplicate_group)),
+            "(group: 'DuplicateGroup') -> 'MediaType'",
+        )
+        self.assertEqual(
+            str(inspect.signature(core.reselect_internal_keeper)),
+            "(group: 'DuplicateGroup', new_keeper: 'FileEntry') -> 'DuplicateGroup'",
+        )
         for name in ("threads", "should_cancel", "on_progress"):
             self.assertEqual(cross.parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
             self.assertEqual(inner.parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
