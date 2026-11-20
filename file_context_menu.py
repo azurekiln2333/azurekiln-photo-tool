@@ -237,7 +237,16 @@ class FileContextMenu(QObject):
         table.viewport().installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        if obj is self.table.viewport() and event.type() == QEvent.Type.ContextMenu:
+        # 监听对象是 table.viewport()（QWidget，不是 QAbstractItemView），所以不能按
+        # obj 类型预筛；先看事件类型，避免所有普通事件都去碰已删除的表格。
+        if event.type() != QEvent.Type.ContextMenu:
+            return super().eventFilter(obj, event)
+        try:
+            viewport = self.table.viewport()
+        except RuntimeError:
+            # 页面析构时 TableView 的 C++ 对象已删除：释放本次事件，不访问已删除对象
+            return False
+        if obj is viewport:
             self.show(event.pos())
             return True
         return super().eventFilter(obj, event)

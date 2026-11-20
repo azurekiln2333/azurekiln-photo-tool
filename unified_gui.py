@@ -9,7 +9,7 @@ from typing import Any
 
 from qframelesswindow import FramelessMainWindow
 
-from PyQt6.QtCore import QParallelAnimationGroup, QPoint, QEasingCurve, QPropertyAnimation, Qt, QUrl
+from PyQt6.QtCore import QParallelAnimationGroup, QPoint, QEasingCurve, QPropertyAnimation, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QFont
 from PyQt6.QtWidgets import (
     QApplication,
@@ -35,7 +35,7 @@ from timestamp_fix_gui import MainWindow as TimestampFixWindow
 
 APP_TITLE = "AzureKiln Photo Tool"
 APP_NAME = "AzureKilnPhotoTool"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 GITHUB_URL = "https://github.com/azurekiln2333/azurekiln-photo-tool"
 SUPPORTED_LANGUAGES = ("zh", "en")
 TRANSLATIONS = {
@@ -559,6 +559,11 @@ class UnifiedMainWindow(FluentWindow):
         self.lang = self._load_global_language()
         # 防重入：媒体统计页的 on_ready 会回调 self.close()，避免无限递归
         self._closing_through_media_statistics = False
+        # 内嵌页收不到 closeEvent；用主线程定时器等待其后台任务和 UI 回写收尾。
+        self._optional_close_timer = QTimer(self)
+        self._optional_close_timer.setSingleShot(True)
+        self._optional_close_timer.setInterval(50)
+        self._optional_close_timer.timeout.connect(self.close)
 
         self._feature_windows = [
             MergeLivePhotoWindow(self, embedded=True),
@@ -866,6 +871,15 @@ class UnifiedMainWindow(FluentWindow):
         等用户选择后页面再次调用窗口关闭，届时 on_ready 回调会重新触发 close()。
         不在主线程阻塞等待工作线程。
         """
+        optional_windows = self._optional_windows()
+        if any(window._is_busy() for window in optional_windows):
+            for window in optional_windows:
+                window._shutdown_workers()
+            self._optional_close_timer.start()
+            event.ignore()
+            return
+        self._optional_close_timer.stop()
+
         stats = getattr(self, "media_statistics_window", None)
         if stats is not None and not self._closing_through_media_statistics:
             request_close = getattr(stats, "request_close", None)

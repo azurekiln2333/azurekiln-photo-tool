@@ -76,6 +76,14 @@ CI 下（环境变量 `CI` 存在）spec 发现 `exiftool.exe` / `exiftool_files
 - **自检**：`scripts/ci/verify_bundle.py` 用 PyInstaller `CArchiveReader` 读 exe 目录表，断言含
   `pillow_heif`（PYZ 模块 + `_pillow_heif*.pyd` + `libheif*.dll`）、`send2trash`、
   `exiftool.exe`、`exiftool_files/{perl.exe,exiftool.pl,lib/}`。
+- **视频预览**：运行时依赖 `PyQt6.QtMultimedia` 的 Qt FFmpeg 后端，不要求用户安装
+  `ffmpeg.exe`。onefile spec 必须收集 QtMultimedia，不能排除其依赖 QtNetwork。
+  自检分别断言 CArchive 中的 `QtMultimedia.pyd`、`Qt6Multimedia.dll`、`Qt6Network.dll`、
+  `plugins/multimedia/ffmpegmediaplugin.dll` 与 avcodec/avformat/avutil/swresample/swscale DLL；
+  原生 `.pyd` 不在 PYZ，不能用纯 Python 模块检查误判。FFmpeg 后端 DLL 不经 UPX。
+- **测试门禁**：安装依赖后、构建前运行 `python -B -m unittest discover -s tests -v`，
+  `QT_QPA_PLATFORM=offscreen`，APPDATA/LOCALAPPDATA 指向 runner 临时目录。失败立即停止，
+  不允许继续发布；最终构建必须晚于所有源码修复，不能发布开发中途的旧快照。
 - **便携包**：`scripts/ci/package_portable.py --version <ver> [--date YYYYMMDD]`，日期默认 UTC 当天，
   输出到 `release/`，并自检三方哈希。
 - **安装包**：`installer/AzureKilnPhotoTool.iss`（Inno Setup 6），安装单文件 exe；

@@ -110,6 +110,13 @@ class EmbeddedPage(QWidget):
 时忽略本次关闭并切到统计页展示草稿决策；后台完成后再请求关闭，不能等待线程阻塞界面。
 接口详情见 [媒体统计与目录说明](../python/media-statistics.md)。
 
+目录比对和目录内去重的后台线程另走 `_is_busy()` / `_shutdown_workers()` 协议，
+包含扫描、回收、记录 I/O、待处理队列及线程清理。统一窗口关闭时先请求停止，
+忙则 `event.ignore()` 并通过单次 QTimer 重试关闭；不能只关闭缩略图池就销毁内嵌页面，
+也不能在 GUI 线程同步 `wait()`。两页真正空闲后才继续统计页草稿守卫及主窗口关闭。
+回归见 `tests/test_unified_close.py`，须让真实记录线程挂起后触发主窗口关闭，
+验证窗口保持存活、线程收尾后关闭、DeferredDelete 后无 Qt 槽异常。
+
 ---
 
 ## 禁止事项

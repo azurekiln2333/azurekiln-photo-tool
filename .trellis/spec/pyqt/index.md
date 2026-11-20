@@ -26,6 +26,7 @@
 | [页面结构](./page-structure.md) | 功能页布局、嵌入 unified 的方式 |
 | [控件与组件约定](./component-guidelines.md) | qfluentwidgets 控件用法、图标、样式 |
 | [线程与异步](./threading-and-workers.md) | QThread + Worker + 信号 + 主线程 drain 模式 |
+| [共享媒体预览](./shared-previews.md) | 等宽槽位、长路径、视频后端、有限重试与缓存代号 |
 | [媒体统计与目录说明](../python/media-statistics.md) | 跨层计数/说明接口、草稿守卫与异步关闭契约 |
 | [多语言文案](./translations.md) | zh/en 翻译机制、翻译键约定 |
 | [质量约定](./quality-guidelines.md) | GUI 冒烟测试、布局、可访问性 |

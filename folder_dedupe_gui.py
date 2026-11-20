@@ -16,11 +16,13 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import file_context_menu as fcm
 from duplicate_scan_core import (
     FileEntry,
+    RecycleOutcome,
     ScanCancelled,
     ScanResult,
     find_internal_duplicates,
@@ -29,6 +31,7 @@ from duplicate_scan_core import (
 from elevation_hint import attach_elevation_hint
 from file_context_menu import FileContextMenu
 from media_thumbnail import PreviewPanel, ThumbnailLoader
+from scan_record_core import ROW_STATUS_BASES, ScanRecord, load_record, save_record
 from PyQt6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
@@ -40,7 +43,16 @@ from PyQt6.QtCore import (
     QUrl,
     pyqtSignal,
 )
-from PyQt6.QtGui import QBrush, QColor, QCursor, QDesktopServices, QFont, QPixmap
+from PyQt6.QtGui import (
+    QBrush,
+    QColor,
+    QCursor,
+    QDesktopServices,
+    QFont,
+    QKeySequence,
+    QPixmap,
+    QShortcut,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -103,6 +115,10 @@ KIND_KEEPER = "keeper"
 KIND_DUPLICATE = "duplicate"
 KIND_MISMATCH = "mismatch"
 KIND_ISSUE = "issue"
+
+# 扫描记录的固定模式名（与 scan_record_core 冻结合同一致）
+RECORD_MODE = "internal"
+RECORD_FILTER = "JSON (*.json)"
 
 COL_CHECK = 0
 COL_GROUP = 1
@@ -216,6 +232,25 @@ TRANSLATIONS = {
         "menu_copy_files": "复制文件",
         "menu_cut_files": "剪切文件",
         "menu_system": "系统右键菜单...",
+        "btn_select_all": "全选",
+        "btn_select_none": "全不选",
+        "btn_invert": "反选",
+        "btn_export_record": "导出记录",
+        "btn_import_record": "导入记录",
+        "record_action_save": "导出",
+        "record_action_load": "导入",
+        "record_working": "正在{action}扫描记录…",
+        "record_done_title": "扫描记录",
+        "record_saved": "已导出扫描记录：{path}",
+        "record_imported": "已导入扫描记录：{path}；回收前会强制逐字节复核",
+        "record_import_failed": "导入失败：{error}",
+        "record_save_failed": "导出失败：{error}",
+        "record_export_title": "导出扫描记录",
+        "record_import_title": "导入扫描记录",
+        "record_no_data": "当前没有可导出的扫描结果，请先扫描或导入记录",
+        "record_import_cancelled": "导入的记录已被取消，不能执行回收",
+        "record_import_stale": "导入的记录已失效，需要重新扫描",
+        "record_force_verify": "导入记录：回收前强制逐字节复核",
     },
     "en": {
         "app_title": "Folder Dedupe",
@@ -321,6 +356,25 @@ TRANSLATIONS = {
         "menu_copy_files": "Copy files",
         "menu_cut_files": "Cut files",
         "menu_system": "System context menu...",
+        "btn_select_all": "Select all",
+        "btn_select_none": "Select none",
+        "btn_invert": "Invert",
+        "btn_export_record": "Export record",
+        "btn_import_record": "Import record",
+        "record_action_save": "export",
+        "record_action_load": "import",
+        "record_working": "{action}ing scan record…",
+        "record_done_title": "Scan record",
+        "record_saved": "Scan record exported: {path}",
+        "record_imported": "Scan record imported: {path}; byte-verify is enforced before recycling",
+        "record_import_failed": "Import failed: {error}",
+        "record_save_failed": "Export failed: {error}",
+        "record_export_title": "Export scan record",
+        "record_import_title": "Import scan record",
+        "record_no_data": "No scan result to export yet; scan or import a record first",
+        "record_import_cancelled": "The imported record was cancelled; recycling is blocked",
+        "record_import_stale": "The imported record is stale; rescan required",
+        "record_force_verify": "Imported record: byte-verify enforced before recycling",
     },
 }
 
@@ -518,7 +572,12 @@ class DedupeTableModel(QAbstractTableModel):
         if not row.is_checkable():
             return False
         # 保留策略变更后旧结果作废：扫描结果与实际保留文件不再对应，禁止回收
-        return not getattr(self.owner, "_scan_stale", False)
+        if getattr(self.owner, "_scan_stale", False):
+            return False
+        # 取消的扫描/导入记录不能执行回收（PRD R4）
+        if getattr(self.owner, "_scan_cancelled", False):
+            return False
+        return True
 
     def _display_value(self, row: DedupeRow, column: int) -> str:
         if column == COL_CHECK:
@@ -799,6 +858,43 @@ class DedupeRecycleWorker(QObject):
         )
 
 
+class RecordSaveWorker(QObject):
+    """后台导出扫描记录（文件 IO 不进主线程）。"""
+
+    finished = pyqtSignal(str)   # 写入的路径
+    failed = pyqtSignal(str)
+
+    def __init__(self, path: Path, record: ScanRecord):
+        super().__init__()
+        self._path = Path(path)
+        self._record = record
+
+    def run(self):
+        try:
+            save_record(self._path, self._record)
+        except Exception as exc:  # 包括 ValueError/OSError
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.finished.emit(str(self._path))
+
+class RecordLoadWorker(QObject):
+    """后台导入扫描记录：只有完整解析成功才发 finished。"""
+
+    finished = pyqtSignal(object)  # ScanRecord
+    failed = pyqtSignal(str)
+
+    def __init__(self, path: Path):
+        super().__init__()
+        self._path = Path(path)
+
+    def run(self):
+        try:
+            record = load_record(self._path, expected_mode=RECORD_MODE)
+        except Exception as exc:
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.finished.emit(record)
+
 class MainWindow(FramelessMainWindow):
     def __init__(self, parent=None, embedded: bool = False):
         super().__init__(parent)
@@ -831,6 +927,15 @@ class MainWindow(FramelessMainWindow):
         self._scan_worker: DedupeScanWorker | None = None
         self._recycle_thread: QThread | None = None
         self._recycle_worker: DedupeRecycleWorker | None = None
+        # 扫描记录导入导出（后台线程）；引用非 None 即视为忙，直到 finished 清理
+        self._record_thread: QThread | None = None
+        self._record_worker: RecordSaveWorker | RecordLoadWorker | None = None
+        self._record_action = ""
+
+        # 扫描/导入时的根与选项快照（导出只用它，不读后来修改过的控件）
+        self._scan_snapshot: dict | None = None
+        self._current_result: ScanResult | None = None
+        self._record_imported = False
 
         self._process_update_queue: deque[tuple[int, str]] = deque()
         self._pending_recycle_result: dict | None = None
@@ -1050,6 +1155,31 @@ class MainWindow(FramelessMainWindow):
         row3.addWidget(self.btn_stop_recycle)
         row3.addWidget(self.btn_recycle)
         action_layout.addLayout(row3)
+
+        # 批量勾选 + 扫描记录（第二行，避免 1360 宽工具栏溢出）
+        row4 = QHBoxLayout()
+        row4.setSpacing(8)
+        self.btn_select_all = PushButton(self.tr("btn_select_all"), self)
+        self.btn_select_all.clicked.connect(lambda _checked=False: self.select_all_checkable())
+        self.btn_select_none = PushButton(self.tr("btn_select_none"), self)
+        self.btn_select_none.clicked.connect(lambda _checked=False: self.select_none_checkable())
+        self.btn_invert = PushButton(self.tr("btn_invert"), self)
+        self.btn_invert.clicked.connect(lambda _checked=False: self.invert_checkable())
+        row4.addWidget(self.btn_select_all)
+        row4.addWidget(self.btn_select_none)
+        row4.addWidget(self.btn_invert)
+        row4.addStretch(1)
+        self.btn_export_record = PushButton(self.tr("btn_export_record"), self)
+        self.btn_export_record.clicked.connect(lambda _checked=False: self.export_scan_record())
+        self.btn_import_record = PushButton(self.tr("btn_import_record"), self)
+        self.btn_import_record.clicked.connect(lambda _checked=False: self.import_scan_record())
+        row4.addWidget(self.btn_export_record)
+        row4.addWidget(self.btn_import_record)
+        action_layout.addLayout(row4)
+
+        # Ctrl+A 仅勾选合法待回收行（不改变表格行选择）
+        self._select_all_shortcut = QShortcut(QKeySequence.StandardKey.SelectAll, self)
+        self._select_all_shortcut.activated.connect(self.select_all_checkable)
 
         # ---- 底部 ----
         foot_card = CardWidget(self)
@@ -1313,6 +1443,11 @@ class MainWindow(FramelessMainWindow):
             self.tr("btn_resume") if self._recycle_paused else self.tr("btn_pause")
         )
         self.btn_stop_recycle.setText(self.tr("btn_stop_recycle"))
+        self.btn_select_all.setText(self.tr("btn_select_all"))
+        self.btn_select_none.setText(self.tr("btn_select_none"))
+        self.btn_invert.setText(self.tr("btn_invert"))
+        self.btn_export_record.setText(self.tr("btn_export_record"))
+        self.btn_import_record.setText(self.tr("btn_import_record"))
         self.table_model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, COLUMN_COUNT - 1)
         self._set_status_text(self._last_status_key, **self._last_status_kwargs)
         self._refresh_summary()
@@ -1431,8 +1566,11 @@ class MainWindow(FramelessMainWindow):
         return (
             self.is_scanning
             or self.is_recycling
-            or (self._scan_thread is not None and self._scan_thread.isRunning())
-            or (self._recycle_thread is not None and self._recycle_thread.isRunning())
+            # 线程引用非 None 即忙：``isRunning()==False`` 到 finished 回调清理之间
+            # 按钮可能已重新启用，此时再点击会覆盖唯一引用或多个任务交错。
+            or self._scan_thread is not None
+            or self._recycle_thread is not None
+            or self._record_thread is not None
             or self._drain_timer.isActive()
             or bool(self._process_update_queue)
         )
@@ -1458,6 +1596,16 @@ class MainWindow(FramelessMainWindow):
             and bool(self._recyclable_rows())
         )
         self.btn_recycle.setEnabled(can_recycle)
+        busy = busy or self._record_thread is not None
+        has_rows = bool(self.table_model.rows)
+        batch_enabled = (
+            (not busy) and has_rows and not self._scan_stale and not self._scan_cancelled
+        )
+        for button in (self.btn_select_all, self.btn_select_none, self.btn_invert):
+            button.setEnabled(batch_enabled)
+        # 导出用扫描时的快照；只要有一次完整结果就可导出（记录里保留 cancelled/stale）
+        self.btn_export_record.setEnabled((not busy) and self._current_result is not None)
+        self.btn_import_record.setEnabled(not busy)
         for widget in (
             self.root_edit,
             self.btn_root,
@@ -1502,6 +1650,273 @@ class MainWindow(FramelessMainWindow):
         self.summary.setText(text)
 
     # ------------------------------------------------------------------
+    # 批量勾选（仅合法待回收行；保留/异常/碰撞/已处理/取消/失效行一律不变）
+    # ------------------------------------------------------------------
+    def _selectable_rows(self) -> list[DedupeRow]:
+        """可被批量勾选的行：与表格模型 ``_checkable`` 判定完全一致。"""
+        return [row for row in self.table_model.rows if self.table_model._checkable(row)]
+
+    def _apply_checked(self, targets: list[DedupeRow], checked: bool) -> int:
+        changed = 0
+        for row in targets:
+            if row.checked != checked:
+                row.checked = checked
+                changed += 1
+        if changed:
+            self._refresh_check_column()
+            self._on_row_check_changed()
+        return changed
+
+    def select_all_checkable(self) -> int:
+        """全选：只勾选当前可回收行（返回变更行数，便于测试/调试）。"""
+        if self._is_busy() or self._scan_stale:
+            return 0
+        return self._apply_checked(self._selectable_rows(), True)
+
+    def select_none_checkable(self) -> int:
+        if self._is_busy():
+            return 0
+        return self._apply_checked(self._selectable_rows(), False)
+
+    def invert_checkable(self) -> int:
+        if self._is_busy() or self._scan_stale:
+            return 0
+        changed = 0
+        for row in self._selectable_rows():
+            row.checked = not row.checked
+            changed += 1
+        if changed:
+            self._refresh_check_column()
+            self._on_row_check_changed()
+        return changed
+
+    # ------------------------------------------------------------------
+    # 扫描记录导出/导入（后台线程，坏记录不破坏当前显示）
+    # ------------------------------------------------------------------
+    def _runtime_row_states(self) -> dict[str, dict]:
+        states: dict[str, dict] = {}
+        for row in self.table_model.rows:
+            path = row.primary_path()
+            if path is None:
+                continue
+            try:
+                key = os.path.normcase(os.path.abspath(os.fspath(path)))
+            except Exception:
+                key = os.fspath(path)
+            states[key] = {"checked": bool(row.checked), "status": str(row.status)}
+        return states
+
+    def _apply_record_row_states(self, rows: list[DedupeRow], states: dict[str, dict]) -> None:
+        if not states:
+            return
+        for row in rows:
+            path = row.primary_path()
+            if path is None:
+                continue
+            try:
+                key = os.path.normcase(os.path.abspath(os.fspath(path)))
+            except Exception:
+                key = os.fspath(path)
+            state = states.get(key)
+            if not isinstance(state, dict):
+                continue
+            status = state.get("status")
+            checked = state.get("checked")
+            # 只恢复已知的行状态键（防止脏字符串污染展示）
+            if isinstance(status, str) and status:
+                base = status.split("|", 1)[0]
+                if base in ROW_STATUS_BASES:
+                    row.status = status
+            if isinstance(checked, bool):
+                # 导入历史不是复核结果：只有仍属合法待回收行、且记录未失效/未取消才允许勾选
+                row.checked = bool(
+                    checked
+                    and row.is_checkable()
+                    and not self._scan_stale
+                    and not self._scan_cancelled
+                )
+
+    def _build_record(self) -> ScanRecord:
+        """用扫描时的根/选项快照 + 完整 ScanResult 构记录。"""
+        if self._current_result is None or self._scan_snapshot is None:
+            raise ValueError("no_scan_result")
+        snapshot = self._scan_snapshot
+        return ScanRecord(
+            mode=RECORD_MODE,
+            root_a=Path(snapshot["root_a"]),
+            root_b=None,
+            scope=str(snapshot["scope"]),
+            keep_strategy=str(snapshot["keep_strategy"]),
+            result=self._current_result,
+            row_states=self._runtime_row_states(),
+            created_at=str(snapshot.get("created_at") or ""),
+            stale=bool(self._scan_stale),
+        )
+
+    def _start_record_task(self, worker, action: str, on_finished) -> bool:
+        if self._is_busy():
+            self._notify(self.tr("cannot_start_title"), self.tr("blocked_busy"), is_error=True)
+            return False
+        self._record_action = action
+        self._record_thread = QThread(self)
+        self._record_worker = worker
+        worker.moveToThread(self._record_thread)
+        self._record_thread.started.connect(worker.run)
+        worker.finished.connect(on_finished)
+        worker.failed.connect(self._on_record_failed)
+        worker.finished.connect(self._record_thread.quit)
+        worker.failed.connect(self._record_thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        self._record_thread.finished.connect(self._record_thread.deleteLater)
+        self._record_thread.finished.connect(self._record_thread_finished)
+        self._set_status_text(
+            "record_working",
+            action=self.tr("record_action_save" if action == "save" else "record_action_load"),
+        )
+        self._update_action_states()
+        self._record_thread.start()
+        return True
+
+    def export_scan_record(self) -> bool:
+        """导出扫描记录到 JSON（用户选择路径，I/O 在后台线程）。"""
+        if self._is_busy():
+            self._notify(self.tr("cannot_start_title"), self.tr("blocked_busy"), is_error=True)
+            return False
+        if self._current_result is None or self._scan_snapshot is None:
+            self._notify(self.tr("record_done_title"), self.tr("record_no_data"), is_error=True)
+            return False
+        try:
+            record = self._build_record()
+        except Exception as exc:
+            self._notify(self.tr("record_done_title"),
+                         self.tr("record_save_failed", error=str(exc))[:160], is_error=True)
+            return False
+        default_name = f"folder_dedupe_record_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        default_dir = self._scan_snapshot.get("root_a") or str(Path.home())
+        target, _filter = QFileDialog.getSaveFileName(
+            self, self.tr("record_export_title"), str(Path(default_dir) / default_name),
+            RECORD_FILTER,
+        )
+        if not target:
+            return False
+        return self._start_record_task(RecordSaveWorker(Path(target), record), "save",
+                                       self._on_record_saved)
+
+    def import_scan_record(self) -> bool:
+        if self._is_busy():
+            self._notify(self.tr("cannot_start_title"), self.tr("blocked_busy"), is_error=True)
+            return False
+        source, _filter = QFileDialog.getOpenFileName(
+            self, self.tr("record_import_title"), str(Path.home()), RECORD_FILTER
+        )
+        if not source:
+            return False
+        return self._start_record_task(RecordLoadWorker(Path(source)), "load",
+                                       self._on_record_loaded)
+
+    def _on_record_saved(self, path_str: str):
+        self._set_status_text("record_saved", path=path_str)
+        self._notify(self.tr("record_done_title"), self.tr("record_saved", path=path_str))
+        self._maybe_finish_close()
+
+    def _on_record_failed(self, error: str):
+        # 坏记录/写失败：完整解析失败前不碰现有显示
+        if self._record_action == "save":
+            self._set_status_text("record_save_failed", error=error)
+            self._notify(self.tr("record_done_title"),
+                         self.tr("record_save_failed", error=error)[:200], is_error=True)
+        else:
+            self._set_status_text("record_import_failed", error=error)
+            self._notify(self.tr("record_done_title"),
+                         self.tr("record_import_failed", error=error)[:200], is_error=True)
+        self._maybe_finish_close()
+
+    def _on_record_loaded(self, record: object):
+        if not isinstance(record, ScanRecord):
+            self._on_record_failed(f"{type(record).__name__}")
+            return
+        self._apply_imported_record(record)
+        self._set_status_text("record_imported", path="")
+        self._notify(
+            self.tr("record_done_title"), self.tr("record_force_verify"),
+            is_error=bool(record.stale) or bool(record.result.cancelled),
+        )
+        self._maybe_finish_close()
+
+    def _apply_imported_record(self, record: ScanRecord):
+        """把完整解析成功的记录替换到当前显示（在此之前不碰任何控件）。"""
+        self._suspend_settings_save = True
+        try:
+            self.root_edit.setText(str(record.root_a))
+            for index in range(self.scope_combo.count()):
+                if self.scope_combo.itemData(index) == record.scope:
+                    self.scope_combo.setCurrentIndex(index)
+                    break
+            self._set_keep_strategy(record.keep_strategy)
+        finally:
+            self._suspend_settings_save = False
+
+        result = record.result
+        self._current_result = result
+        # 导入记录是不可信历史：取消/失效性质由记录本身带过来，回收仍然受 guard 限制
+        self._scan_snapshot = {
+            "root_a": str(record.root_a),
+            "root_b": None,
+            "scope": record.scope,
+            "keep_strategy": record.keep_strategy,
+            "created_at": record.created_at,
+        }
+        self._record_imported = True
+        self._scan_cancelled = bool(result.cancelled)
+        self._scan_stale = bool(record.stale)
+        self._has_scan = True
+        self._group_count = len(result.groups)
+        self._mismatch_count = len(result.mismatches)
+        self._issue_count = len(result.issues)
+        self._recycled_count = 0
+        self._skipped_count = 0
+        self._failed_count = 0
+
+        self.thumbnail_loader.clear()
+        rows = self._build_rows(result)
+        self._apply_record_row_states(rows, record.row_states or {})
+        # 已处理行的计数也按恢复的状态算（否则汇总会把历史说成 0）
+        self._recycled_count = sum(
+            1 for row in rows if row.status.startswith("status_recycled")
+        )
+        self._skipped_count = sum(1 for row in rows if row.status.startswith("status_skipped"))
+        self._failed_count = sum(1 for row in rows if row.status.startswith("status_failed"))
+        self.table.setUpdatesEnabled(False)
+        try:
+            self.table_model.reset_rows(rows)
+            self._rebuild_path_index()
+        finally:
+            self.table.setUpdatesEnabled(True)
+        self._refresh_preview()
+        self._refresh_summary()
+        self.progress.setValue(0)
+        if self._scan_cancelled:
+            self._set_status_text("record_import_cancelled")
+        elif self._scan_stale:
+            self._set_status_text("record_import_stale")
+        else:
+            self._set_status_text(
+                "scan_done",
+                groups=self._group_count,
+                count=sum(1 for row in rows if row.kind == KIND_DUPLICATE),
+                total=len(rows),
+            )
+        self._update_action_states()
+
+    def _record_thread_finished(self):
+        self._record_worker = None
+        self._record_thread = None
+        self._record_action = ""
+        self._update_action_states()
+        self._maybe_finish_close()
+
+    # ------------------------------------------------------------------
     # 扫描
     # ------------------------------------------------------------------
     def browse_root(self):
@@ -1541,6 +1956,15 @@ class MainWindow(FramelessMainWindow):
         self._scan_cancelled = False
         self._scan_stale = False
         self._has_scan = False
+        self._record_imported = False  # 新扫描成功后会清除导入标记
+        # 扫描时的根/选项快照（绝对路径）：导出只用它，不读后来修改过的控件
+        self._scan_snapshot = {
+            "root_a": os.path.abspath(os.fspath(root)),
+            "root_b": None,
+            "scope": self._scope(),
+            "keep_strategy": self._keep_strategy(),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
         self.progress.setValue(0)
         self._set_status_text("scanning")
         self._update_action_states()
@@ -1592,6 +2016,17 @@ class MainWindow(FramelessMainWindow):
     def _apply_scan_result(self, result: ScanResult):
         self.is_scanning = False
         self._has_scan = True
+        # 新扫描会重置导入标记（记录已不再对应当前结果）
+        self._record_imported = False
+        self._current_result = result
+        if self._scan_snapshot is None:
+            self._scan_snapshot = {
+                "root_a": os.path.abspath(self.root_edit.text().strip() or os.getcwd()),
+                "root_b": None,
+                "scope": self._scope(),
+                "keep_strategy": self._keep_strategy(),
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            }
         self._scan_cancelled = bool(result.cancelled)
         self._scan_stale = False
         self._group_count = len(result.groups)
@@ -1694,6 +2129,8 @@ class MainWindow(FramelessMainWindow):
         self._group_count = 0
         self._has_scan = False
         self._scan_stale = False
+        self._current_result = None
+        self._scan_snapshot = None
         self._process_update_queue.clear()
         self._pending_recycle_result = None
         self._drain_timer.stop()
@@ -1755,7 +2192,9 @@ class MainWindow(FramelessMainWindow):
         self._update_action_states()
 
         self._recycle_thread = QThread(self)
-        self._recycle_worker = DedupeRecycleWorker(items, self.byte_verify_check.isChecked())
+        # 导入记录是不可信历史：强制逐字节复核，不信任用户后来的勾选/设置
+        byte_verify = True if self._record_imported else self.byte_verify_check.isChecked()
+        self._recycle_worker = DedupeRecycleWorker(items, byte_verify)
         self._recycle_worker.moveToThread(self._recycle_thread)
         self._recycle_thread.started.connect(self._recycle_worker.run)
         self._recycle_worker.row_update_batch.connect(self._queue_recycle_updates)
@@ -1807,6 +2246,7 @@ class MainWindow(FramelessMainWindow):
             result = self._pending_recycle_result
             self._pending_recycle_result = None
             self._apply_recycle_finished(result)
+        self._maybe_finish_close()
 
     def _apply_recycle_updates(self, updates: list[tuple[int, str]]):
         rows = self.table_model.rows
@@ -1900,8 +2340,17 @@ class MainWindow(FramelessMainWindow):
             or (self._recycle_thread is not None and self._recycle_thread.isRunning())
         )
 
+    def _threads_pending(self) -> bool:
+        """线程引用/回调还未清理：关闭必须等它们收尾（防止覆盖唯一引用）。"""
+        return bool(
+            self._workers_running()
+            or self._scan_thread is not None
+            or self._recycle_thread is not None
+            or self._record_thread is not None
+        )
+
     def _maybe_finish_close(self):
-        if self._pending_close and not self._workers_running():
+        if self._pending_close and not self._threads_pending():
             self._pending_close = False
             self._release_thumbnail_loader()
             self.close()
@@ -1913,8 +2362,9 @@ class MainWindow(FramelessMainWindow):
             pass
 
     def closeEvent(self, event):
-        # 有后台线程时先请求停止并延后关闭，避免 QThread 在运行时被销毁
-        if self._workers_running():
+        # 有后台线程（含尚未清理完成的记录线程）时先请求停止并延后关闭，
+        # 避免 QThread 在运行时被销毁，也避免窗口先消失、回调再落到已释放控件
+        if self._threads_pending() or self._is_busy():
             self._pending_close = True
             self._shutdown_workers()
             event.ignore()

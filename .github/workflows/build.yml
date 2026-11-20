@@ -41,6 +41,17 @@ jobs:
           python -m pip install -r requirements-build.txt
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
+      - name: Run unit tests (offscreen, isolated APPDATA)
+        # 有意义的最小门禁：标准库 unittest，不引入 pytest 等新依赖。
+        # GUI 测试必须离屏运行并把 APPDATA/LOCALAPPDATA 指到临时目录，避免读用户真实配置。
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP "azurekiln-appdata-tests"
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "azurekiln-localappdata-tests"
+          New-Item -ItemType Directory -Force -Path $env:APPDATA, $env:LOCALAPPDATA | Out-Null
+          python -B -m unittest discover -s tests -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
       - name: Read and check version
         id: version
         env:

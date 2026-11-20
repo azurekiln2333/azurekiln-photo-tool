@@ -44,13 +44,16 @@ The top-left menu button expands or collapses the sidebar. Every feature page al
 ### Folder Compare
 
 - Pick folder A (the keep-only library — **read-only, never modified or deleted**) and folder B (to clean up); both are scanned recursively in the background.
-- Lists every file in B that is **byte-identical** to some file in A; if B holds several copies of the same content, all of them are listed. Files that only duplicate each other inside B, with no counterpart in A, are not handled here.
-- "Identical" means three checks that must all pass: **same size → same full-file SHA-256 → byte-by-byte equality with the reference file in A**.
-- A file whose SHA-256 matches but whose bytes differ is reported as "hash mismatch" and is **never recycled**; such rows are counted separately.
-- Unreadable files, permission errors, and files that vanish mid-scan are reported as "read issues" and are never recycled.
+- Lists every copy in B that is **byte-identical** to some file in A; "identical" requires all three checks: **same size → same full-file SHA-256 → byte-by-byte equality**. Files that only duplicate each other inside B, with no counterpart in A, are not handled here.
+- A file whose SHA-256 matches but whose bytes differ is reported as "hash mismatch"; unreadable files, permission errors, and files that vanish mid-scan are reported as "read issues". Neither kind is ever recycled.
+- **Select all / Select none / Invert selection** only act on currently valid recycle candidates; keeper rows, hash mismatches, read issues, processed, and cancelled rows are protected.
+- Both preview slots stay the same width and the splitter between table and preview can be dragged to any useful ratio; long paths wrap at any character and never stretch the preview area.
+- Video previews do not depend on the Windows thumbnail cache: when the system thumbnail is unavailable, the first frame is decoded by the bundled Qt Multimedia FFmpeg backend with a timeout. Failures show a reason and are retried a limited number of times; **Retry preview** forces a fresh decode, so a file that finished downloading appears correctly.
+- The scan can be exported as a versioned JSON record (mode, scan roots, options, file fingerprints, groups, issues, statistics, and check/processing state) and imported later to continue reviewing. Imported records are treated as untrusted history: out-of-root paths, wrong mode, duplicate targets, or records intersecting the keeper are rejected.
+- Recycling from an imported record re-reads every current file and forces a byte-by-byte verification, so changed or deleted files are skipped; cancelled or stale records cannot recycle anything.
 - Before each recycle, the pair (target, reference) is re-validated: both still exist, size and modification time still match the scan, and by default the bytes are compared once more (can be turned off for speed). Any failure skips that item with an explicit reason.
 - Identical / nested A and B roots (checked on real paths) are rejected with a message. Symbolic links and directory junctions are never followed, and zero-byte files are skipped.
-- Each row shows the B and A thumbnails with relative paths, size, modified time, SHA-256 prefix, and status; the side preview panel shows the B file next to its A counterpart.
+- Each row shows the B and A thumbnails with relative paths, size, modified time, SHA-256 prefix, and status.
 - Cleanup is **Recycle Bin only** (`send2trash`); there is no permanent delete.
 
 ### Folder Dedupe
@@ -58,6 +61,7 @@ The top-left menu button expands or collapses the sidebar. Every feature page al
 - Pick one folder, scan all subfolders recursively, group files by content (byte-identical), keep exactly one file per group, and list the rest for recycling.
 - Keep strategies: shallowest / shortest path (default), oldest modified time, newest modified time. Ties fall back to path order, so results are deterministic and repeatable.
 - Shares the same scan and verification core as Folder Compare (size → full SHA-256 → byte comparison), including pre-execution re-validation and hash-mismatch protection.
+- Also supports **select all / select none / invert selection** (valid candidates only, keepers protected), the equal-width draggable preview, the video first-frame fallback with retry, and versioned JSON record export / import with mandatory byte verification after import.
 - Rows of the same group are tinted alternately; keeper rows cannot be checked. The side preview panel shows the selected file next to its group keeper.
 - Recycle Bin only, as well.
 
@@ -126,6 +130,7 @@ Requirements:
 - Optional: `send2trash` for recycle-bin cleanup
 - `pywin32` for the system context menu
 - Flyme repair requires `ExifTool`
+- Video first frames use the Qt Multimedia FFmpeg backend bundled in the PyQt6 wheel; no separate FFmpeg install is needed, and the release bundle self-check requires that backend
 
 Pinned versions (the ones used for release builds, Python 3.14 recommended) are listed in `requirements.txt`:
 
@@ -192,7 +197,7 @@ The Flyme repair batch workflow is primarily exposed through the GUI. Its core i
 
 `.github/workflows/build.yml` does all packaging on a Windows runner:
 
-- **Push to any branch**: installs `requirements-build.txt`, downloads a pinned ExifTool (13.58, SHA256-verified), builds the onefile exe from `AzureKilnPhotoTool_onefile.spec`, verifies the bundle contains `pillow_heif` and ExifTool, then produces the portable zip, SHA256 file, and Inno Setup installer as workflow artifacts (no Release).
+- **Push to any branch**: installs `requirements-build.txt`, runs the standard-library unittest suite under `tests/` with offscreen Qt (`QT_QPA_PLATFORM=offscreen`) and an isolated `APPDATA`, then builds the onefile exe from `AzureKilnPhotoTool_onefile.spec` (ExifTool 13.58 injected after SHA256 verification). The bundle self-check requires `pillow_heif`, ExifTool, the Qt Multimedia FFmpeg video first-frame backend, and the page modules before producing the portable zip, SHA256 file, and Inno Setup installer as workflow artifacts (no Release).
 - **Push a `vX.Y.Z` tag**: runs the same build and creates a GitHub Release with the portable zip, `.sha256.txt`, and installer.
 
 The single source of the version is `APP_VERSION` in `unified_gui.py`. The tag must match it, otherwise the build fails and nothing is published:
@@ -237,13 +242,14 @@ Do not pass `--clean`, and always build from a `.venv` with all dependencies ins
 - `media_statistics_core.py`: standard-library-only recursive folder scan and image/video counting core (no PyQt).
 - `media_readme_core.py`: standard-library-only `readme.txt` encoding detection, loading, safe creation, and atomic saving core (no PyQt).
 - `duplicate_scan_core.py`: standard-library-only scan and verification core (no PyQt) for folder compare / folder dedupe: enumeration, hashing, byte comparison, pre-execution re-validation, recycling.
+- `scan_record_core.py`: standard-library-only scan-record JSON format, save/load, and untrusted-history validation (no PyQt).
 - `media_thumbnail.py`: async thumbnail loader and side preview panel shared by the Folder Compare and Folder Dedupe pages.
 - `dir_compare_gui.py`: Folder Compare page and standalone entry point.
 - `folder_dedupe_gui.py`: Folder Dedupe page and standalone entry point.
-- `tests/test_duplicate_scan_core.py`: `unittest` cases for the scan and verification core (no new dependencies).
+- `tests/`: standard-library `unittest` regressions (scan core, record format, thumbnail/video fallback, page bulk selection and record entry points), no third-party test framework.
 - `*_translations.py`: GUI localization text.
 - `requirements.txt` / `requirements-build.txt`: pinned runtime / build dependencies.
-- `AzureKilnPhotoTool_onefile.spec`: onefile PyInstaller spec (bundles ExifTool).
+- `AzureKilnPhotoTool_onefile.spec`: onefile PyInstaller spec (bundles ExifTool and the Qt Multimedia video backend).
 - `installer/AzureKilnPhotoTool.iss`: Inno Setup installer script.
 - `scripts/ci/`: version, bundle-check, and portable-packaging scripts (shared by CI and local builds).
 - `.github/workflows/build.yml`: CI build and release workflow.

@@ -4,15 +4,16 @@
 
 ---
 
-## 无自动测试框架
+## 自动回归与人工验证
 
-本项目**没有** pytest / unittest 测试套件。质量保证依靠：
+本项目已有标准库 `unittest` 套件（`tests/test_duplicate_scan_core.py`），涉及精确判重和回收安全的变更必须运行。质量保证包括：
 
-1. 语法检查（`compileall`）
-2. 无头 GUI 冒烟测试（临时脚本，跑完删除）
-3. `sample/` 真实样例的回归验证
+1. 标准库单元回归：`.venv/Scripts/python.exe -B -m unittest discover -s tests -v`
+2. 语法检查（`compileall`，不能替代测试或类型检查）
+3. 无头 GUI 冒烟测试（隔离 `APPDATA`，确认进程正常退出）
+4. `sample/` 真实样例的回归验证
 
-**不要引入测试框架**——属于架构变更，需要单独讨论。
+新增回归沿用标准库 `unittest`；不为本轮修复引入 pytest 等第三方框架。GUI 测试先设置 `QT_QPA_PLATFORM=offscreen` 和临时 `APPDATA`，再导入页面模块，禁止触碰真实相册或真实回收站。
 
 ---
 

@@ -44,13 +44,16 @@ AzureKiln Photo Tool 是面向 Windows 的動態照片處理工具集。現在�
 ### 目錄比對
 
 - 選擇目錄 A（保留庫，**唯讀，絕不修改或刪除其中任何檔案**）與目錄 B（待清理），於背景遞迴掃描兩者的全部子目錄。
-- 找出 B 中所有與 A 中某個檔案**逐位元組一致**的檔案；同一內容在 B 有幾份副本就全部列出。只在 B 內部重複、A 中不存在的檔案本頁不處理。
-- 判定「一致」的唯一依據是三重複核，缺一不可：**大小相同 → 完整檔案 SHA-256 相同 → 與 A 中參照檔案逐位元組比對完全相同**。
-- SHA-256 相同但逐位元組不同的檔案（雜湊碰撞或異常改名）標記為「複核不一致」，**絕不回收**，單獨計數呈現。
-- 讀取失敗、權限不足、掃描中消失的檔案記錄為「讀取問題」，同樣不回收。
+- 列出 B 中所有與 A 中某個檔案**逐位元組一致**的副本；判定只採用三重複核：**大小相同 → 完整檔案 SHA-256 相同 → 逐位元組比對完全相同**。只在 B 內部重複、A 中不存在的檔案本頁不處理。
+- SHA-256 相同但逐位元組不同的檔案（雜湊碰撞或異常改名）標記為「複核不一致」，讀取失敗、權限不足、掃描中消失的檔案標記為「讀取問題」，兩類都**絕不回收**。
+- 掃描結束後仍可繼續操作：**全選 / 全不選 / 反選**只作用於目前合法的待回收副本；保留項、複核異常、讀取問題、已處理、已取消的列不會被批次選中。
+- 兩側預覽槽始終等寬，拖曳表格與預覽之間的分隔條即可調整寬度；長路徑依任意字元換行，不會把預覽區擠開。
+- 影片預覽不依賴 Windows 縮圖快取：系統縮圖取不到時由內建 Qt Multimedia FFmpeg 後端解碼首幀（帶逾時），失敗會顯示原因並自動有限重試；可點擊「重試預覽」強制重新解碼，已下載完成的檔案會隨之正常顯示。
+- 可將本次掃描匯出為帶版本的 JSON 記錄（模式、掃描根、選項、檔案指紋、分組、異常、統計與勾選/處理狀態），之後重新匯入繼續複核。匯入的記錄視為不可信的歷史資料：越界路徑、錯誤模式、重複目標或與保留項相交的記錄會被拒絕。
+- 從匯入記錄執行回收時，會對每一對檔案重新讀取目前檔案並強制逐位元組複核，已刪除或已修改的檔案會被跳過；已取消或失效的記錄不能回收。
 - 執行回收前對每一對（目標, 參照檔案）重新複核：兩者都存在、大小與修改時間與掃描時一致；預設還會再逐位元組複核一次（可關閉以提速）。任一不滿足就跳過並給出原因。
 - A 與 B 相同、A 在 B 內、B 在 A 內（解析真實路徑後判斷）→ 拒絕掃描並提示。不跟隨符號連結 / 目錄聯結，預設跳過 0 位元組檔案。
-- 每列顯示 B 與 A 的縮圖及相對路徑、大小、修改時間、SHA-256 前綴與狀態；右側預覽面板並排顯示 B 檔案與對應 A 檔案。
+- 每列顯示 B 與 A 的縮圖及相對路徑、大小、修改時間、SHA-256 前綴與狀態。
 - **只移入回收站**（`send2trash`），不提供永久刪除。
 
 ### 目錄內去重
@@ -58,6 +61,7 @@ AzureKiln Photo Tool 是面向 Windows 的動態照片處理工具集。現在�
 - 選擇一個目錄，遞迴掃描全部子目錄，依內容（逐位元組一致）分組，每組保留 1 個檔案，其餘列為回收對象。
 - 保留策略可選：層級最淺 / 路徑最短（預設）、修改時間最早、修改時間最新；平手時依路徑排序，結果確定可重現。
 - 與「目錄比對」共用同一套掃描與複核核心（大小 → 完整 SHA-256 → 逐位元組比對），同樣帶執行前複核與「複核不一致」保護。
+- 同樣支援**全選 / 全不選 / 反選**（僅作用於合法副本，保留列受保護）、等寬可拖曳預覽、影片首幀解碼回退與重試，以及帶版本 JSON 記錄匯出 / 匯入與匯入後強制逐位元組複核。
 - 表格中同組列以交替底色區分，保留列不可勾選；右側預覽面板顯示所選檔案與本組保留檔案。
 - 同樣只移入回收站。
 
@@ -126,6 +130,7 @@ Get-Content .\AzureKilnPhotoTool-1.1.0-20261108-windows-x64-portable.sha256.txt
 - 可選：`send2trash`，用於移入回收站
 - `pywin32`：系統右鍵選單
 - Flyme 修復需要 `ExifTool`
+- 影片首幀預覽使用 PyQt6 內建的 Qt Multimedia FFmpeg 後端，無需另外安裝 FFmpeg；發布包會自檢該後端是否齊全
 
 上述依賴的固定版本見 `requirements.txt`（發布構建所用版本，建議 Python 3.14）：
 
@@ -192,7 +197,7 @@ Flyme 修復的批次流程主要透過 GUI 提供，核心邏輯位於 `flyme_l
 
 `.github/workflows/build.yml` 在 Windows runner 上完成全部打包：
 
-- **push 到任意分支**：安裝 `requirements-build.txt`，下載固定版本 ExifTool（13.58，校驗 SHA256），以 `AzureKilnPhotoTool_onefile.spec` 打包單一執行檔，自檢產物含 `pillow_heif` 與 ExifTool，產生可攜 zip、SHA256 檔案與 Inno Setup 安裝程式，作為 workflow artifact 上傳（不發布 Release）。
+- **push 到任意分支**：安裝 `requirements-build.txt`，先以離屏 Qt（`QT_QPA_PLATFORM=offscreen`）與隔離 `APPDATA` 執行 `tests/` 下的標準庫 unittest，再以 `AzureKilnPhotoTool_onefile.spec` 打包單一執行檔（ExifTool 13.58 校驗 SHA256 後注入），自檢產物含 `pillow_heif`、ExifTool、Qt Multimedia FFmpeg 影片首幀後端與頁面模組，產生可攜 zip、SHA256 檔案與 Inno Setup 安裝程式，作為 workflow artifact 上傳（不發布 Release）。
 - **推送 `vX.Y.Z` 標籤**：執行同樣的構建，並自動建立 GitHub Release，上傳可攜 zip、`.sha256.txt` 與安裝程式。
 
 版本號唯一來源是 `unified_gui.py` 中的 `APP_VERSION`，標籤必須與之一致，否則構建失敗、不發布：
@@ -237,13 +242,14 @@ iscc /DAppVersion=1.1.0 installer\AzureKilnPhotoTool.iss
 - `media_statistics_core.py`：純標準庫的目錄遞迴掃描與圖片/影片計數核心（不依賴 PyQt）。
 - `media_readme_core.py`：純標準庫的 `readme.txt` 編碼辨識、讀取、安全建立與原子儲存核心（不依賴 PyQt）。
 - `duplicate_scan_core.py`：純標準庫的目錄比對 / 目錄內去重掃描與複核核心（不依賴 PyQt）：列舉、雜湊、逐位元組比對、執行前複核、回收。
+- `scan_record_core.py`：純標準庫的掃描記錄 JSON 格式、儲存/讀取與不可信歷史複核（不依賴 PyQt）。
 - `media_thumbnail.py`：目錄比對與目錄內去重頁共用的非同步縮圖載入器與側邊預覽面板。
 - `dir_compare_gui.py`：目錄比對頁面和獨立入口。
 - `folder_dedupe_gui.py`：目錄內去重頁面和獨立入口。
-- `tests/test_duplicate_scan_core.py`：掃描與複核核心的 `unittest` 用例（無新增依賴）。
+- `tests/`：標準庫 `unittest` 回歸（掃描核心、記錄格式、縮圖/影片回退、頁面批次勾選與記錄入口），無第三方測試框架。
 - `*_translations.py`：各功能 GUI 的多語言文字。
 - `requirements.txt` / `requirements-build.txt`：固定版本的執行 / 打包依賴。
-- `AzureKilnPhotoTool_onefile.spec`：單一執行檔打包設定（含 ExifTool）。
+- `AzureKilnPhotoTool_onefile.spec`：單一執行檔打包設定（含 ExifTool 與 Qt Multimedia 影片後端）。
 - `installer/AzureKilnPhotoTool.iss`：Inno Setup 安裝程式腳本。
 - `scripts/ci/`：版本讀取、產物自檢、可攜包產生腳本（CI 與本機共用）。
 - `.github/workflows/build.yml`：雲端構建與發布流程。

@@ -19,7 +19,13 @@ hiddenimports = [
     "dir_compare_gui",
     "folder_dedupe_gui",
     "duplicate_scan_core",
+    "scan_record_core",
     "media_thumbnail",
+    # 视频首帧回退：media_thumbnail 在函数内延迟导入 QtMultimedia，静态分析虽能发现，
+    # 但显式声明可确保 PyQt6 的 QtMultimedia hook 生效（Qt6Multimedia.dll、
+    # plugins/multimedia/ffmpegmediaplugin.dll 及其 avcodec/avformat/avutil/swresample/swscale 依赖）。
+    # 该后端随 PyQt6 wheel 提供，不需要额外下载 FFmpeg。
+    "PyQt6.QtMultimedia",
 ]
 
 for package_name in ("qfluentwidgets", "qframelesswindow"):
@@ -74,7 +80,8 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        "PyQt6.QtNetwork",
+        # 注意：不要 exclude PyQt6.QtNetwork——QtMultimedia 的 FFmpeg 后端在运行时依赖它，
+        # 排除后视频首帧回退会失败（warn 文件里可见 "excluded module QtNetwork imported by PyQt6.QtMultimedia"）。
         "PyQt6.QtOpenGL",
         "PyQt6.QtQml",
         "PyQt6.QtQuick",
@@ -110,6 +117,13 @@ exe = EXE(
         "Qt6Core.dll",
         "Qt6Gui.dll",
         "Qt6Widgets.dll",
+        "Qt6Multimedia.dll",
+        "ffmpegmediaplugin.dll",
+        "avcodec-*.dll",
+        "avformat-*.dll",
+        "avutil-*.dll",
+        "swresample-*.dll",
+        "swscale-*.dll",
         "exiftool.exe",
     ],
     runtime_tmpdir=None,
