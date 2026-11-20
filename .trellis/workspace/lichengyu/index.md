@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
+- **Total Sessions**: 6
 - **Last Active**: 2026-11-21
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~136 | Active |
+| `journal-1.md` | ~159 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-11-21 | Dedupe grouping, keeper choice, CI race fix and main release v1.2.4 | `cdf4176`, `b0d4335` | `main` |
 | 5 | 2026-11-21 | 目录比对预览与扫描记录修复，发布 v1.2.2 | `239874b`, `55ed8fb`, `a594841` | `feat/folder-media-statistics` |
 | 4 | 2026-11-20 | 目录比对与目录内去重（4 个 pi 并行） | `fc7229a` | `feat/folder-media-statistics` |
 | 3 | 2026-10-12 | 填充项目 spec：Web 模板改写为 python/pyqt 真实约定 | `527ad4b` | `main` |

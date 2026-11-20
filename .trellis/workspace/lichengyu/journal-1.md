@@ -134,3 +134,26 @@
 ### Next Steps
 
 - 真实OneDrive仅联机占位视频尚未端到端实机验证；未运行发布安装包。
+
+
+## Session 6: Dedupe grouping, keeper choice, CI race fix and main release v1.2.4
+<!-- trellis-session: v=2 fp=911447771341475f -->
+
+**Date**: 2026-11-21
+**Task**: Dedupe grouping, keeper choice, CI race fix and main release v1.2.4
+**Branch**: `main`
+
+### Summary
+
+Implemented with four existing herdr Pi agents: photo/video/other groups, per-path preview guard, keeper reselection, visible batch selection and v1 record compatibility. Reproduced and fixed CI test completion race using real timer gate; 201 full tests passed. Fast-forwarded complete feature chain into main; main/feature/tag CI passed; v1.2.4 published and actual release downloads/EXE checksum verified. OneDrive online-only end-to-end remains unverified.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cdf4176` | feat: group duplicate files and allow choosing the keeper |
+| `b0d4335` | test: wait for recycle UI completion and prepare 1.2.4 |
+
+### Status
+
+[OK] **Completed**
