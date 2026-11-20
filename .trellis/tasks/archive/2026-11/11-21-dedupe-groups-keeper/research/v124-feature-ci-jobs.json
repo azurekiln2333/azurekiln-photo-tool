@@ -1,0 +1,185 @@
+{
+  "total_count": 1,
+  "jobs": [
+    {
+      "id": 136633051807,
+      "run_id": 44836184833,
+      "workflow_name": "Build",
+      "head_branch": "feat/dedupe-groups-keeper",
+      "run_url": "https://api.github.com/repos/azurekiln2333/azurekiln-photo-tool/actions/runs/44836184833",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOSlRs_c8AAAAfz_bqnw",
+      "head_sha": "b0d4335d8e6a291ffa79ab097fd2ccc70dc26f97",
+      "url": "https://api.github.com/repos/azurekiln2333/azurekiln-photo-tool/actions/jobs/136633051807",
+      "html_url": "https://github.com/azurekiln2333/azurekiln-photo-tool/actions/runs/44836184833/job/136633051807",
+      "status": "in_progress",
+      "conclusion": null,
+      "created_at": "2026-11-20T23:21:27Z",
+      "started_at": "2026-11-20T23:21:30Z",
+      "completed_at": null,
+      "name": "build",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-20T23:21:32Z",
+          "completed_at": "2026-11-20T23:21:35Z"
+        },
+        {
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-20T23:21:35Z",
+          "completed_at": "2026-11-20T23:21:42Z"
+        },
+        {
+          "name": "Set up Python",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-20T23:21:42Z",
+          "completed_at": "2026-11-20T23:21:45Z"
+        },
+        {
+          "name": "Install dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-20T23:21:45Z",
+          "completed_at": "2026-11-20T23:22:14Z"
+        },
+        {
+          "name": "Run unit tests (offscreen, isolated APPDATA)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-20T23:22:14Z",
+          "completed_at": "2026-11-20T23:22:29Z"
+        },
+        {
+          "name": "Read and check version",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-20T23:22:29Z",
+          "completed_at": "2026-11-20T23:22:30Z"
+        },
+        {
+          "name": "Cache ExifTool",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-20T23:22:30Z",
+          "completed_at": "2026-11-20T23:22:30Z"
+        },
+        {
+          "name": "Download ExifTool",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-11-20T23:22:30Z",
+          "completed_at": "2026-11-20T23:22:47Z"
+        },
+        {
+          "name": "Configure ExifTool",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-11-20T23:22:47Z",
+          "completed_at": "2026-11-20T23:22:47Z"
+        },
+        {
+          "name": "Build onefile exe (PyInstaller)",
+          "status": "in_progress",
+          "conclusion": null,
+          "number": 10,
+          "started_at": "2026-11-20T23:22:47Z",
+          "completed_at": null
+        },
+        {
+          "name": "Verify bundle contents",
+          "status": "pending",
+          "conclusion": null,
+          "number": 11,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Package portable zip",
+          "status": "pending",
+          "conclusion": null,
+          "number": 12,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Ensure Inno Setup",
+          "status": "pending",
+          "conclusion": null,
+          "number": 13,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Build installer (Inno Setup)",
+          "status": "pending",
+          "conclusion": null,
+          "number": 14,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Upload artifacts",
+          "status": "pending",
+          "conclusion": null,
+          "number": 15,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Publish GitHub Release",
+          "status": "pending",
+          "conclusion": null,
+          "number": 16,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Post Cache ExifTool",
+          "status": "pending",
+          "conclusion": null,
+          "number": 30,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Post Set up Python",
+          "status": "pending",
+          "conclusion": null,
+          "number": 31,
+          "started_at": null,
+          "completed_at": null
+        },
+        {
+          "name": "Post Checkout",
+          "status": "pending",
+          "conclusion": null,
+          "number": 32,
+          "started_at": null,
+          "completed_at": null
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/azurekiln2333/azurekiln-photo-tool/check-runs/136633051807",
+      "labels": [
+        "windows-latest"
+      ],
+      "runner_id": 1000001936,
+      "runner_name": "GitHub Actions 1000001936",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    }
+  ]
+}

@@ -9,8 +9,8 @@
 3. [x] w55:p8：类型筛选、逐路径其他禁预览、切换保留项、可见分类全选反选完成；补齐页面两个缩略图池关闭。
 4. [x] w55:pA：GUI 交互与双池关闭回归完成；root 最终页面定向 25 项通过，实际记录往返与回收参数验证通过。
 5. [x] w55:pB：独立全链路审查、四份相关 spec 与 CI-like 验证完成；201 项 0 失败/错误，缺少 ffmpeg 的三项样片测试明确跳过。
-6. [ ] 主会话汇总并运行全量、语法和 GUI 验证，确认所有 Pi 停笔后提交；按用户授权 push、创建新版本 tag 并跟踪 CI/CD。
-7. [ ] 发布资产校验、任务归档与 journal 收尾。
+6. [x] 主会话完成全量/语法/GUI 验证和提交推送；CI 竞争修复后 main/feature 全流程通过，新 v1.2.4 标签已从 main 推送，继续跟踪正式发布。
+7. [x] 发布资产真实下载/哈希校验通过；任务归档与 journal 由 finish-work 收尾记录。
 
 ## 验证与门禁
 
@@ -33,5 +33,5 @@
 - root 确定性复现：仅延长真实 drain timer 至 250ms，旧测试等 `_recycle_thread is None` 后立即读行，稳定读到 `status_pending`。产品 `_is_busy` 已包含 is_recycling/timer/queue；线程 finished 不等于 UI 更新排空。
 - [x] pA 以真实 timer 信号门禁修正完整 idle 等待和中间态断言，定向8轮+页面25项通过；p8/p4 核对产品安全，pB 复核日志/分支范围。所有内容变更/删除/send2trash 禁止/计数断言保留。
 - [x] root 修复后完整环境201项通过（9.634s，无skip，exit0），旧250ms失败探针现在通过；pB修复后CI-like201项通过（8.774s，缺ffmpeg的3项skip，exit0），源码哈希不变、无残留缩略图线程。
-- [ ] 定向与完整环境/CI-like 复验后提交修复；分支祖先关系已初查，ci 分支等于 main，folder-statistics 为本分支祖先，可 fast-forward 完整合入 main。
-- [ ] 推送 main 与修复分支，确认新提交 CI；从 main 发布新 v1.2.4，不移动已有 v1.2.3。远端资产核验后归档本任务。
+- [x] 定向/完整环境/CI-like 复验后提交 b0d4335，完整快进合入并推送 main；ci/github-release、feat/folder-media-statistics、feat/dedupe-groups-keeper 均为 main 祖先，未删分支。main run44836184819 / feature run44836184833 全流程success。
+- [x] main/修复分支均推送且全流程success；v1.2.4标签/Release成功，三资产真实下载/解包哈希核验通过，v1.2.3未移动。执行finish-work归档本任务。
