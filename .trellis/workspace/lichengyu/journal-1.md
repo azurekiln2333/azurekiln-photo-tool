@@ -74,3 +74,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 4: 目录比对与目录内去重（4 个 pi 并行）
+<!-- trellis-session: v=2 fp=34d6560a0bc55f6f -->
+
+**Date**: 2026-11-20
+**Task**: 目录比对与目录内去重（4 个 pi 并行）
+**Branch**: `feat/folder-media-statistics`
+
+### Summary
+
+新增目录比对页与目录内去重页，共用 duplicate_scan_core（大小→完整 SHA-256→逐字节比对，回收前复核，只进回收站）；缩略图与预览面板、右键打开目录；4 个 pi 按 WP 并行实现，81 个核心单测通过；同时提交 11-15 媒体统计完善，发布 v1.2.0
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fc7229a` | feat: add folder compare and in-folder dedupe pages |
+
+### Status
+
+[OK] **Completed**
