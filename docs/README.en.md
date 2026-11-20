@@ -2,7 +2,7 @@
 
 [简体中文](../README.md) | [繁體中文](README.zh-TW.md) | English
 
-AzureKiln Photo Tool is a Windows-focused motion photo toolkit. It combines seven feature pages into one PyQt6 / Fluent-style GUI with a Windows-style sidebar:
+AzureKiln Photo Tool is a Windows-focused motion photo toolkit. It combines nine feature pages into one PyQt6 / Fluent-style GUI with a Windows-style sidebar:
 
 - **LivePhoto Merge**: batch merge same-name image and video pairs into Motion Photos recognized by Google Photos and Microsoft Photos.
 - **Huawei LivePhoto Split**: batch split single Huawei LivePhoto JPG files into `JPG + MP4`.
@@ -10,7 +10,9 @@ AzureKiln Photo Tool is a Windows-focused motion photo toolkit. It combines seve
 - **Fix Photo Timestamps**: restore file creation, modification, and access times from capture time.
 - **Rename Photos/Videos**: batch rename photos and videos to `IMG_YYYYMMDD_HHMMSS` / `VID_YYYYMMDD_HHMMSS` based on the read timestamp.
 - **Dedupe Media**: find and clean up duplicate images and videos by content hash.
-- **Media Statistics**: browse per-folder image, video, and total media counts in a directory tree, and edit an existing `readme.txt` in the selected folder.
+- **Media Statistics**: browse per-folder image, video, and total media counts in a directory tree, and edit and automatically save `readme.txt` in the selected folder.
+- **Folder Compare**: pick the files in a messy folder B that are byte-identical to files in a keep-only library A, re-verify them, and move only those to the Recycle Bin. A is never modified.
+- **Folder Dedupe**: find byte-identical duplicate copies across subfolders of a single folder, keep one per group, and move the rest to the Recycle Bin.
 
 The top-left menu button expands or collapses the sidebar. Every feature page also keeps its own standalone GUI entry point for isolated use and regression testing.
 
@@ -39,6 +41,26 @@ The top-left menu button expands or collapses the sidebar. Every feature page al
 - Supports drag-and-drop import, asynchronous scanning, drag selection, sorting, context menus, copy/move, and fix/export workflows.
 - Saves output directory, language, category filters, and processing options locally.
 
+### Folder Compare
+
+- Pick folder A (the keep-only library — **read-only, never modified or deleted**) and folder B (to clean up); both are scanned recursively in the background.
+- Lists every file in B that is **byte-identical** to some file in A; if B holds several copies of the same content, all of them are listed. Files that only duplicate each other inside B, with no counterpart in A, are not handled here.
+- "Identical" means three checks that must all pass: **same size → same full-file SHA-256 → byte-by-byte equality with the reference file in A**.
+- A file whose SHA-256 matches but whose bytes differ is reported as "hash mismatch" and is **never recycled**; such rows are counted separately.
+- Unreadable files, permission errors, and files that vanish mid-scan are reported as "read issues" and are never recycled.
+- Before each recycle, the pair (target, reference) is re-validated: both still exist, size and modification time still match the scan, and by default the bytes are compared once more (can be turned off for speed). Any failure skips that item with an explicit reason.
+- Identical / nested A and B roots (checked on real paths) are rejected with a message. Symbolic links and directory junctions are never followed, and zero-byte files are skipped.
+- Each row shows the B and A thumbnails with relative paths, size, modified time, SHA-256 prefix, and status; the side preview panel shows the B file next to its A counterpart.
+- Cleanup is **Recycle Bin only** (`send2trash`); there is no permanent delete.
+
+### Folder Dedupe
+
+- Pick one folder, scan all subfolders recursively, group files by content (byte-identical), keep exactly one file per group, and list the rest for recycling.
+- Keep strategies: shallowest / shortest path (default), oldest modified time, newest modified time. Ties fall back to path order, so results are deterministic and repeatable.
+- Shares the same scan and verification core as Folder Compare (size → full SHA-256 → byte comparison), including pre-execution re-validation and hash-mismatch protection.
+- Rows of the same group are tinted alternately; keeper rows cannot be checked. The side preview panel shows the selected file next to its group keeper.
+- Recycle Bin only, as well.
+
 ### Media Statistics
 
 - Drag in, paste, or pick a root folder; it is scanned recursively in the background and shown as a tree of the real directory levels (root / year / month / any nested folder), with empty folders preserved.
@@ -49,9 +71,10 @@ The top-left menu button expands or collapses the sidebar. Every feature page al
 - OneDrive "online-only" placeholders are included (cloud attributes are never treated as links to skip); real symbolic links and directory junctions are skipped to avoid cycles.
 - Supports expand all, collapse all, rescan, and stop; inaccessible folders or a stopped scan keep the partial result and are clearly marked incomplete.
 - Selecting any folder node loads the `readme.txt` **directly inside that folder** below the tree for editing (case-insensitive name, parent readme is never inherited).
-- Only existing readme files are edited; new files are never created, and files above 2 MiB are shown but locked.
+- The compact editor leaves more height for the folder tree. Changes save automatically after about 0.8 seconds of inactivity or when focus leaves the editor; no save button is needed.
+- If no readme exists, start typing to create `readme.txt` in that folder using UTF-8. Viewing an empty editor creates nothing. Both loading and saving have a 2 MiB limit.
 - Recognized encodings (UTF-8 / UTF-8 BOM / UTF-16 BOM / GB18030) and common newline styles are preserved; saving writes a temporary file and replaces the original, so a failed write leaves the original untouched.
-- Switching folders, rescanning, or quitting with unsaved text offers save / discard / cancel; if the readme was modified or deleted externally, a conflict is reported and nothing is silently overwritten.
+- Switching folders, rescanning, or quitting first saves the latest draft. Failed saves keep the text and offer retry / discard / cancel. External modification, deletion, or creation of a competing readme is reported as a conflict and never silently overwritten.
 - Online-only readme caveat: a `readme.txt` is only read on demand when its folder is selected, and OneDrive may download that text at that point; being offline or a read failure only affects the readme area with a visible message, never the statistics themselves, and never triggers other media downloads. Directory enumeration itself may make the cloud client fetch directory metadata, so the scan is not promised to be entirely network-free.
 
 ## Tested Devices
@@ -127,7 +150,7 @@ system PATH
 ## Usage
 
 1. Start the unified GUI with `python unified_gui.py` or run `AzureKilnPhotoTool.exe`.
-2. Choose a feature page from the sidebar: `LivePhoto Merge`, `Huawei LivePhoto Split`, `Flyme LivePhoto Fix`, `Fix Photo Timestamps`, `Rename Photos/Videos`, `Dedupe Media`, `Media Statistics`.
+2. Choose a feature page from the sidebar: `LivePhoto Merge`, `Huawei LivePhoto Split`, `Flyme LivePhoto Fix`, `Fix Photo Timestamps`, `Rename Photos/Videos`, `Dedupe Media`, `Media Statistics`, `Folder Compare`, `Folder Dedupe`.
 3. Use the top-left menu button to collapse or expand the sidebar.
 4. Configure source folder, output folder, scan rules, and conflict behavior in the selected page.
 5. Start the current page's merge, split, or repair workflow.
@@ -142,6 +165,8 @@ python timestamp_fix_gui.py
 python rename_photo_gui.py
 python dedupe_media_gui.py
 python media_statistics_gui.py
+python dir_compare_gui.py
+python folder_dedupe_gui.py
 ```
 
 ## Command Line Tools
@@ -200,7 +225,7 @@ Do not pass `--clean`, and always build from a `.venv` with all dependencies ins
 
 ## Project Structure
 
-- `unified_gui.py`: unified sidebar GUI entry point hosting seven feature pages.
+- `unified_gui.py`: unified sidebar GUI entry point hosting nine feature pages.
 - `merge_live_photo_gui.py`: LivePhoto merge page and standalone entry point.
 - `merge_live_photo.py`: command-line batch merge script.
 - `split_huawei_live_photo_gui.py`: Huawei LivePhoto split page and standalone entry point.
@@ -210,7 +235,12 @@ Do not pass `--clean`, and always build from a `.venv` with all dependencies ins
 - `flyme_livephoto_fix_core.py`: ExifTool-based detection and repair engine.
 - `media_statistics_gui.py`: media statistics and folder `readme.txt` editor page and standalone entry point.
 - `media_statistics_core.py`: standard-library-only recursive folder scan and image/video counting core (no PyQt).
-- `media_readme_core.py`: standard-library-only `readme.txt` encoding detection, loading, and atomic saving core (no PyQt).
+- `media_readme_core.py`: standard-library-only `readme.txt` encoding detection, loading, safe creation, and atomic saving core (no PyQt).
+- `duplicate_scan_core.py`: standard-library-only scan and verification core (no PyQt) for folder compare / folder dedupe: enumeration, hashing, byte comparison, pre-execution re-validation, recycling.
+- `media_thumbnail.py`: async thumbnail loader and side preview panel shared by the Folder Compare and Folder Dedupe pages.
+- `dir_compare_gui.py`: Folder Compare page and standalone entry point.
+- `folder_dedupe_gui.py`: Folder Dedupe page and standalone entry point.
+- `tests/test_duplicate_scan_core.py`: `unittest` cases for the scan and verification core (no new dependencies).
 - `*_translations.py`: GUI localization text.
 - `requirements.txt` / `requirements-build.txt`: pinned runtime / build dependencies.
 - `AzureKilnPhotoTool_onefile.spec`: onefile PyInstaller spec (bundles ExifTool).
