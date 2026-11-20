@@ -96,3 +96,41 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 5: 目录比对预览与扫描记录修复，发布 v1.2.2
+<!-- trellis-session: v=2 fp=8494b0b7501c2d03 -->
+
+**Date**: 2026-11-21
+**Task**: 目录比对预览与扫描记录修复，发布 v1.2.2
+**Branch**: `feat/folder-media-statistics`
+
+### Summary
+
+修复等宽可拖预览、视频首帧回退、批量勾选和安全扫描记录；修正CI外部依赖及跨盘测试环境后发布v1.2.2。
+
+### Main Changes
+
+- 通过herdr现有四个Pi完成实现、独立复核与发布核验，保持原模型。
+- JSON历史记录严格校验，执行回收强制逐字节复核，修改或删除目标跳过；全部回收测试用临时文件和mock。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `239874b` | fix: improve compare previews and persist safe scan records |
+| `55ed8fb` | fix(ci): isolate close tests from ExifTool and release 1.2.2 |
+| `a594841` | test: handle relative-path fixtures across Windows drives |
+
+### Testing
+
+- [OK] 本地全量183项通过；真实C盘TEMP/D盘repo、无外部工具环境183项0失败0错误3条件跳过，7.720秒。
+- [OK] GitHub分支44808199635、标签44808571694均success；Release三类资产齐全，下载ZIP与包内EXE哈希、内外校验文本均一致。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 真实OneDrive仅联机占位视频尚未端到端实机验证；未运行发布安装包。

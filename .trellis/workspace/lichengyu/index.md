@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
-- **Last Active**: 2026-11-20
+- **Total Sessions**: 5
+- **Last Active**: 2026-11-21
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~98 | Active |
+| `journal-1.md` | ~136 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-11-21 | 目录比对预览与扫描记录修复，发布 v1.2.2 | `239874b`, `55ed8fb`, `a594841` | `feat/folder-media-statistics` |
 | 4 | 2026-11-20 | 目录比对与目录内去重（4 个 pi 并行） | `fc7229a` | `feat/folder-media-statistics` |
 | 3 | 2026-10-12 | 填充项目 spec：Web 模板改写为 python/pyqt 真实约定 | `527ad4b` | `main` |
 | 2 | 2026-10-12 | 文档补齐六功能页 + Flyme 修复复用 exiftool_resolver | `8cd4974`, `c2ff1e2` | `main` |
