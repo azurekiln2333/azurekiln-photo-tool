@@ -652,6 +652,135 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
         self.assertEqual(set(self.window.category_buttons), {"photo", "video", "other"})
         return root
 
+    def _assert_space(self, total: int, selected: int):
+        self.assertEqual(self.window._reclaimable_sizes(), (total, selected))
+        self.assertEqual(
+            self.window.space_summary.text(),
+            self.window.tr(
+                "space_summary", total=g._format_size(total),
+                selected=g._format_size(selected),
+            ),
+        )
+
+    def test_space_estimate_excludes_ineligible_rows_without_file_io(self):
+        root = self.tmp / "snapshot-only"
+        keeper = FileEntry(root / "keep.jpg", root, 1024, 1, (0, 1))
+        target = FileEntry(root / "duplicate.jpg", root, 1024, 1, (0, 2))
+        unchecked = FileEntry(root / "unchecked.mp4", root, 2048, 1, (0, 3))
+        rows = [
+            g.DedupeRow(g.KIND_DUPLICATE, entry=target, keeper=keeper, checked=True),
+            g.DedupeRow(g.KIND_DUPLICATE, entry=unchecked, keeper=keeper, checked=False),
+            g.DedupeRow(g.KIND_KEEPER, entry=keeper, keeper=keeper, checked=True),
+            g.DedupeRow(g.KIND_ISSUE, entry=target, keeper=keeper, checked=True),
+            g.DedupeRow(g.KIND_MISMATCH, entry=target, keeper=keeper, checked=True),
+            g.DedupeRow(g.KIND_DUPLICATE, keeper=keeper, checked=True),
+            g.DedupeRow(g.KIND_DUPLICATE, entry=target, checked=True),
+        ]
+        rows.extend(
+            g.DedupeRow(g.KIND_DUPLICATE, entry=target, keeper=keeper, checked=True, status=status)
+            for status in (
+                "status_recycled", "status_skipped|target_missing",
+                "status_failed|error", "status_cancelled",
+            )
+        )
+        self.window._apply_scan_result(ScanResult())
+        self.window.table_model.reset_rows(rows)
+        with mock.patch.object(Path, "stat", side_effect=AssertionError("unexpected stat")), \
+                mock.patch.object(Path, "open", side_effect=AssertionError("unexpected open")), \
+                mock.patch("builtins.open", side_effect=AssertionError("unexpected open")):
+            self.assertEqual(self.window._reclaimable_sizes(), (3072, 1024))
+        self.window._refresh_summary()
+        self._assert_space(3072, 1024)
+        for flag in ("_scan_stale", "_scan_cancelled"):
+            with self.subTest(flag=flag):
+                setattr(self.window, flag, True)
+                self.window._refresh_summary()
+                self._assert_space(0, 0)
+                setattr(self.window, flag, False)
+        self.window._has_scan = False
+        self.window._refresh_summary()
+        self._assert_space(0, 0)
+        self.window._has_scan = True
+        self.window._reset_results()
+        self._assert_space(0, 0)
+
+    def test_space_estimate_updates_selection_hidden_categories_keeper_and_language(self):
+        self._typed_scan()
+        sizes = {
+            classify_duplicate_group(group): group.size
+            for group in self.window._current_result.groups
+        }
+        total = 2 * sum(sizes.values())
+        self._assert_space(total, total)
+        for category in ("photo", "video", "other"):
+            self.window.category_buttons[category].click()
+            self.window.btn_select_none.click()
+        self._assert_space(total, 0)
+        self.window.category_buttons["photo"].click()
+        self.window.btn_select_all.click()
+        self._assert_space(total, 2 * sizes["photo"])
+        self.window.btn_invert.click()
+        self._assert_space(total, 0)
+        self.window.btn_invert.click()
+        self.window.category_buttons["video"].click()
+        self.window.btn_select_all.click()
+        selected = 2 * (sizes["photo"] + sizes["video"])
+        self.window.category_buttons["other"].click()
+        self._assert_space(total, selected)
+        self.window.category_buttons["photo"].click()
+        index, candidate = next(
+            (index, row) for index, row in enumerate(self.window.table_model.rows)
+            if row.kind == g.KIND_DUPLICATE
+            and self._category_for_group(row.group_id) == "photo"
+        )
+        self.window.table.selectRow(index)
+        self.window.btn_set_keeper.click()
+        self.assertEqual(candidate.kind, g.KIND_KEEPER)
+        self._assert_space(total, selected)
+        for language, label, tooltip in (
+            ("en", "Estimated reclaimable:", "emptying the recycle bin"),
+            ("zh", "预计可腾出：", "清空回收站"),
+        ):
+            self.window.lang = language
+            self.window._apply_language()
+            self._assert_space(total, selected)
+            self.assertIn(label, self.window.space_summary.text())
+            self.assertIn(tooltip, self.window.space_summary.toolTip())
+            self.assertTrue(self.window.space_summary.wordWrap())
+
+    def test_space_estimate_roundtrip_and_real_recycle_updates(self):
+        self._typed_scan()
+        total = 2 * sum(group.size for group in self.window._current_result.groups)
+        self._assert_space(total, total)
+        record_path = self.tmp / "space-roundtrip.json"
+        with mock.patch.object(
+            g.QFileDialog, "getSaveFileName", return_value=(str(record_path), "")
+        ):
+            self.window.btn_export_record.click()
+            self.assertTrue(_pump(self.app, lambda: not self.window._is_busy()))
+        self.assertTrue(record_path.exists())
+        self.window._reset_results()
+        self._assert_space(0, 0)
+        self.assertTrue(self._import(record_path))
+        self.assertTrue(_pump(self.app, lambda: not self.window._is_busy()))
+        self._assert_space(total, total)
+        targets = {row.entry.path for row in self._duplicate_rows()}
+        with mock.patch.object(duplicate_scan_core, "send2trash") as trash, \
+                mock.patch.object(
+                    g.QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+                ):
+            self.window.btn_recycle.click()
+            self.assertTrue(_pump(self.app, lambda: (
+                self.window._recycle_thread is None
+                and not self.window._is_busy()
+                and self.window._pending_recycle_result is None
+                and not self.window._process_update_queue
+            )), "回收UI尚未排空")
+        self.assertEqual({Path(call.args[0]) for call in trash.call_args_list}, targets)
+        self.assertEqual(trash.call_count, len(targets))
+        self.assertTrue(all(row.status == "status_recycled" for row in self._duplicate_rows()))
+        self._assert_space(0, 0)
+
     def test_three_category_buttons_show_correct_counts_and_preserve_source_rows(self):
         self._typed_scan()
         result = self.window._current_result

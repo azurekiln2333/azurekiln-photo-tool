@@ -194,6 +194,8 @@ TRANSLATIONS = {
         "校验不一致 {mismatch} / 读取问题 {issue}",
         "summary_empty": "",
         "summary_stale": "保留策略已变更：需要重新扫描",
+        "space_summary": "预计可腾出：{total}（当前勾选：{selected}）",
+        "space_summary_tooltip": "按待处理副本的文件逻辑大小估算；移入回收站后，清空回收站时才会释放空间。",
         "status_pending": "待处理",
         "status_keep": "保留",
         "status_recycled": "已回收",
@@ -322,6 +324,8 @@ TRANSLATIONS = {
         "mismatch {mismatch} / read issues {issue}",
         "summary_empty": "",
         "summary_stale": "Keep strategy changed: rescan required",
+        "space_summary": "Estimated reclaimable: {total} (selected: {selected})",
+        "space_summary_tooltip": "Estimated from pending duplicates' logical file sizes; space is released only after emptying the recycle bin.",
         "status_pending": "Pending",
         "status_keep": "Keep",
         "status_recycled": "Recycled",
@@ -1225,9 +1229,11 @@ class MainWindow(FramelessMainWindow):
 
         # ---- 底部 ----
         foot_card = CardWidget(self)
-        foot_layout = QHBoxLayout(foot_card)
+        foot_layout = QVBoxLayout(foot_card)
         foot_layout.setContentsMargins(16, 12, 16, 12)
-        foot_layout.setSpacing(10)
+        foot_layout.setSpacing(6)
+        foot_status_layout = QHBoxLayout()
+        foot_status_layout.setSpacing(10)
         self.summary = BodyLabel(self.tr("summary_empty"), self)
         self.summary.setStyleSheet("color: #475467;")
         self.progress = ProgressBar(self)
@@ -1237,13 +1243,19 @@ class MainWindow(FramelessMainWindow):
         self.progress.setMaximumWidth(360)
         self.status = BodyLabel(self.tr("waiting"), self)
         self.status.setStyleSheet("color: #475467;")
-        foot_layout.addWidget(self.summary, 1)
-        foot_layout.addWidget(
+        foot_status_layout.addWidget(self.summary, 1)
+        foot_status_layout.addWidget(
             self.progress, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        foot_layout.addWidget(
+        foot_status_layout.addWidget(
             self.status, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
+        self.space_summary = BodyLabel("", self)
+        self.space_summary.setWordWrap(True)
+        self.space_summary.setStyleSheet("color: #667085;")
+        self.space_summary.setToolTip(self.tr("space_summary_tooltip"))
+        foot_layout.addLayout(foot_status_layout)
+        foot_layout.addWidget(self.space_summary)
 
         outer.addWidget(header_card)
         outer.addWidget(path_card)
@@ -1492,6 +1504,7 @@ class MainWindow(FramelessMainWindow):
         self.btn_import_record.setText(self.tr("btn_import_record"))
         self.btn_set_keeper.setText(self.tr("btn_set_keeper"))
         self._update_category_button_labels()
+        self.space_summary.setToolTip(self.tr("space_summary_tooltip"))
         self.table_model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, COLUMN_COUNT - 1)
         self._set_status_text(self._last_status_key, **self._last_status_kwargs)
         self._refresh_summary()
@@ -1909,7 +1922,40 @@ class MainWindow(FramelessMainWindow):
         self._update_action_states()
         self._refresh_summary()
 
+    def _reclaimable_sizes(self) -> tuple[int, int]:
+        """返回所有 source rows 中待处理副本的总容量和勾选容量；不访问文件系统。"""
+        if (
+            not self._has_scan
+            or self._current_result is None
+            or self._scan_cancelled
+            or self._scan_stale
+        ):
+            return 0, 0
+        total_bytes = 0
+        selected_bytes = 0
+        for row in self.table_model.rows:
+            if not row.is_checkable() or row.entry is None or row.keeper is None:
+                continue
+            size = max(0, int(row.entry.size))
+            total_bytes += size
+            if row.checked:
+                selected_bytes += size
+        return total_bytes, selected_bytes
+
+    def _refresh_space_summary(self) -> None:
+        total_bytes, selected_bytes = self._reclaimable_sizes()
+        self.space_summary.setText(
+            self.tr(
+                "space_summary",
+                total=_format_size(total_bytes),
+                selected=_format_size(selected_bytes),
+            )
+        )
+        self.space_summary.setToolTip(self.tr("space_summary_tooltip"))
+
     def _refresh_summary(self):
+        # 在任何 summary 早返回前同步刷新；容量以完整源模型为准，不受分类隐藏影响。
+        self._refresh_space_summary()
         if not self._has_scan:
             self.summary.setText(self.tr("summary_empty"))
             return
@@ -2428,6 +2474,7 @@ class MainWindow(FramelessMainWindow):
         self._scan_stale = False
         self._current_result = None
         self._scan_snapshot = None
+        self._refresh_space_summary()
         self._process_update_queue.clear()
         self._pending_recycle_result = None
         self._drain_timer.stop()

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/pyqt/quality-guidelines.md", "reason": "独立内嵌中英和交互回归"}
+{"file": ".trellis/spec/python/duplicate-verification.md", "reason": "检查分类keeper及异步回收安全边界"}

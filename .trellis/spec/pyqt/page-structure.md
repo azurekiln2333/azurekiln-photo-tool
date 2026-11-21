@@ -130,6 +130,26 @@ class EmbeddedPage(QWidget):
 
 ---
 
+## 目录内去重预计空间
+
+`folder_dedupe_gui.MainWindow._reclaimable_sizes() -> tuple[int, int]` 返回
+`(total_bytes, selected_bytes)`，由独立可换行的 `space_summary` 展示。
+
+- 从完整 `table_model.rows` 的扫描快照计算；仅统计 `row.is_checkable()` 且
+  `entry` / `keeper` 都存在的副本，第二项再限定 `checked`。不得只统计可见分类。
+- 未扫描、取消或失效结果返回 `(0, 0)`。保留、异常、校验不一致及已处理状态均不计；
+  回收结束后统计剩余待处理容量，而非历史累计已回收容量。
+- 只读取 `FileEntry.size` 并复用 `_format_size`，禁止为了刷新统计执行 stat、open、哈希
+  或重新扫描。预计值不构成回收授权，真实回收仍执行完整安全复核。
+- 勾选/批量选择、重选 keeper、导入、回收更新、失效、重置、语言切换都须刷新；
+  `_refresh_summary()` 的早返回不能保留旧容量。
+- zh/en 提示明确是文件逻辑大小估算，移入回收站后仍须清空才能释放空间；
+  不将此值描述成实际物理磁盘释放量（云占位、压缩或链接等会有差异）。
+- 回归须验证隐藏分类勾选、角色/状态排除、keeper 重选、记录导入和真实异步回收后归零；
+  独立/内嵌及中英布局都须可读、不重叠、不被长文案撑宽。
+
+---
+
 ## 禁止事项
 
 - ❌ 不要假设页面一定独立运行或一定内嵌——两处代码都要能跑。
