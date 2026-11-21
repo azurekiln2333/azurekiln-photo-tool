@@ -157,3 +157,25 @@ Implemented with four existing herdr Pi agents: photo/video/other groups, per-pa
 ### Status
 
 [OK] **Completed**
+
+
+## Session 7: 目录内去重预计可腾出空间
+<!-- trellis-session: v=2 fp=b7524be0a87d29de -->
+
+**Date**: 2026-11-21
+**Task**: 目录内去重预计可腾出空间
+**Branch**: `feat/dedupe-reclaimable-space`
+
+### Summary
+
+新增待处理副本总预计容量和当前勾选容量；全模型跨分类统计，keeper异常已处理排除，失效取消归零；新增三个集中回归，28项定向及204项全量通过；独立/内嵌中英截图检查通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f4dafe1` | feat: show estimated reclaimable space in folder dedupe |
+
+### Status
+
+[OK] **Completed**
