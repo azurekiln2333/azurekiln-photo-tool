@@ -179,3 +179,25 @@ Implemented with four existing herdr Pi agents: photo/video/other groups, per-pa
 ### Status
 
 [OK] **Completed**
+
+
+## Session 8: 去重统计、保留切换、分类回收与滚轮修复 v1.2.5
+<!-- trellis-session: v=2 fp=250cfa3d67b24a72 -->
+
+**Date**: 2026-11-23
+**Task**: 去重统计、保留切换、分类回收与滚轮修复 v1.2.5
+**Branch**: `feat/dedupe-scan-coverage`
+
+### Summary
+
+新增单次枚举覆盖统计与历史未知提示；角色列和右键可重选保留；照片视频其他独立回收；两表滚轮约48px且触控板按像素。222项测试与8组合布局通过，版本1.2.5。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6e51b74` | feat: improve dedupe scan coverage and category controls |
+
+### Status
+
+[OK] **Completed**

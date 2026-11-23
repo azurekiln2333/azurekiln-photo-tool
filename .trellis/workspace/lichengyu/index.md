@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 7
-- **Last Active**: 2026-11-21
+- **Total Sessions**: 8
+- **Last Active**: 2026-11-23
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~181 | Active |
+| `journal-1.md` | ~203 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 8 | 2026-11-23 | 去重统计、保留切换、分类回收与滚轮修复 v1.2.5 | `6e51b74` | `feat/dedupe-scan-coverage` |
 | 7 | 2026-11-21 | 目录内去重预计可腾出空间 | `f4dafe1` | `feat/dedupe-reclaimable-space` |
 | 6 | 2026-11-21 | Dedupe grouping, keeper choice, CI race fix and main release v1.2.4 | `cdf4176`, `b0d4335` | `main` |
 | 5 | 2026-11-21 | 目录比对预览与扫描记录修复，发布 v1.2.2 | `239874b`, `55ed8fb`, `a594841` | `feat/folder-media-statistics` |
