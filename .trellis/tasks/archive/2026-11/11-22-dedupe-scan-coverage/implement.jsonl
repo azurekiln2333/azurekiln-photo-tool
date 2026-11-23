@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/python/duplicate-verification.md", "reason": "保留单次枚举和判重安全语义"}
+{"file": ".trellis/spec/pyqt/threading-and-workers.md", "reason": "后台快照信号节流及生命周期"}
+{"file": ".trellis/spec/pyqt/translations.md", "reason": "主行明细与状态中英刷新"}
+{"file": ".trellis/spec/python/scan-coverage.md", "reason": "实时统计接口与计数契约"}
+{"file": ".trellis/spec/pyqt/component-guidelines.md", "reason": "行级保留入口与Fluent滚动"}

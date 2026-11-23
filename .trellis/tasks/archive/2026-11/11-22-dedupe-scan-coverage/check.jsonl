@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/python/scan-records.md", "reason": "v1保持原投影及历史未知显示"}
+{"file": ".trellis/spec/python/quality-guidelines.md", "reason": "安全扫描及异常有界回归"}
+{"file": ".trellis/spec/pyqt/quality-guidelines.md", "reason": "实时计数与独立内嵌中英布局"}
+{"file": ".trellis/spec/python/scan-coverage.md", "reason": "覆盖统计全范围验收"}
+{"file": ".trellis/spec/python/duplicate-verification.md", "reason": "手动keeper和分类回收安全边界"}
