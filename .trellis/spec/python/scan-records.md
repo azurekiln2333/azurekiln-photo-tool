@@ -31,6 +31,7 @@ def load_record(path: Path, *, expected_mode: str | None = None) -> ScanRecord: 
 - `mode` 为 `compare` 或 `internal`；`roots={a:绝对路径,b:绝对路径或null}`；internal 的 b 必须为 null。
 - `options={scope:'all'|'media', keep_strategy:'shallowest'|'oldest'|'newest'}`。
 - `result` 保留核心 `ScanResult` 的 groups、mismatches、issues、scanned_files、hashed_files、hashed_bytes、cancelled；条目保留 path、root、size、mtime_ns、file_id，组保留完整 SHA-256。
+- 运行时 `ScanResult.coverage` 不进入 schema v1；显式投影仅输出原字段，未知键仍拒绝。重新导入时 coverage 为 None，界面显示历史未保存目录总数，不能用 scanned_files 冒充所有文件数。详见 [去重扫描覆盖统计](./scan-coverage.md)。
 - `row_states` 键为结果中的绝对路径，值仅 `{'checked': bool, 'status': str}`。角色来自核心分组，不能由导入状态反过来改变；只有合法待回收目标可勾选。
 - 保存使用同目录临时文件、flush/fsync 后 `os.replace`。替换失败保留旧目标并清理临时文件。输入有 64 MiB 文件上限及集合/文本边界。
 - 路径允许已经删除，供历史展示；现存链接仍按真实路径检查根归属，不能退回词法路径放行无法确认的解析。

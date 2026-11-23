@@ -17,8 +17,10 @@ import inspect
 import os
 import tempfile
 import unittest
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import duplicate_scan_core as core
@@ -28,6 +30,7 @@ from duplicate_scan_core import (
     FileEntry,
     HashMismatch,
     ScanCancelled,
+    ScanCoverage,
     ScanIssue,
     ScanResult,
     choose_keeper,
@@ -229,6 +232,213 @@ class CollectFilesTests(TempCase):
         write_file(self.a / "x.jpg", b"1")
         entries = collect_files(self.a, should_cancel=lambda: True)
         self.assertEqual(entries, [])
+
+
+class ScanCoverageTests(TempCase):
+    def test_mixed_tree_counts_and_hash_candidates_in_one_pass(self) -> None:
+        nested = self.a / "nested"
+        empty_folder = nested / "empty.jpg"
+        empty_folder.mkdir(parents=True)
+        first = write_file(self.a / ".hidden.JPG", b"same")
+        second = write_file(nested / "copy.jpg", b"same")
+        write_file(nested / "unique.mov", b"unique")
+        write_file(self.a / "outside.txt", b"same")
+        write_file(self.a / "empty.txt", b"")
+        write_file(nested / "empty.jpg.bin", b"")
+        progress = []
+        with mock.patch.object(core.os, "scandir", wraps=os.scandir) as scandir, \
+             mock.patch.object(core, "sha256_file", wraps=core.sha256_file) as sha256:
+            result = find_internal_duplicates(
+                self.a, scope="media", on_progress=lambda *args: progress.append(args)
+            )
+
+        self.assertEqual(result.coverage, ScanCoverage(
+            folders=2, files=6, included_files=3, zero_byte_files=2, filtered_files=1,
+            hash_candidates=2, enumeration_complete=True,
+        ))
+        self.assertEqual((result.scanned_files, result.hashed_files), (3, 2))
+        self.assertEqual(len(result.groups), 1)
+        group = result.groups[0]
+        self.assertEqual({group.keeper.path, group.duplicates[0].path}, {first, second})
+        self.assertCountEqual([call.args[0] for call in scandir.call_args_list],
+                              [self.a, nested, empty_folder])
+        self.assertCountEqual([call.args[0] for call in sha256.call_args_list], [first, second])
+        self.assertEqual({total for stage, _, total in progress if stage == "hash"}, {2})
+
+    def test_links_other_entries_and_cloud_placeholder_are_distinct(self) -> None:
+        def entry(name, *, symlink=False, junction=False, directory=False, file=False, attrs=0):
+            stub = mock.Mock()
+            stub.name = name
+            stub.path = os.fspath(self.a / name)
+            stub.is_symlink.return_value = symlink
+            stub.is_junction.return_value = junction
+            stub.is_dir.return_value = directory
+            stub.is_file.return_value = file
+            stub.stat.return_value = SimpleNamespace(
+                st_size=8, st_mtime_ns=1, st_dev=0, st_ino=0, st_file_attributes=attrs,
+            )
+            return stub
+
+        reparse = core.FILE_ATTRIBUTE_REPARSE_POINT
+        link = entry("linked.jpg", symlink=True)
+        junction = entry("junction", junction=True)
+        mount = entry("mount", directory=True, attrs=reparse)
+        cloud = entry("cloud.jpg", file=True, attrs=reparse)
+        other = entry("special")
+        coverage = ScanCoverage()
+        with mock.patch.object(core.os, "scandir", return_value=nullcontext(
+            iter((link, junction, mount, cloud, other))
+        )) as scandir, mock.patch("builtins.open") as content_open:
+            entries = collect_files(self.a, coverage=coverage)
+        self.assertEqual([item.path for item in entries], [self.a / "cloud.jpg"])
+        self.assertEqual(coverage, ScanCoverage(
+            files=1, included_files=1, skipped_links=3, other_entries=1,
+            enumeration_complete=True,
+        ))
+        scandir.assert_called_once_with(self.a)
+        content_open.assert_not_called()
+        link.stat.assert_not_called()
+        junction.stat.assert_not_called()
+        cloud.stat.assert_called_once_with(follow_symlinks=False)
+
+    def test_entry_directory_and_iterator_errors_keep_discovered_counts(self) -> None:
+        denied = self.a / "denied"
+        denied.mkdir()
+        interrupted = self.a / "interrupted"
+        first = write_file(self.a / "before.jpg", b"1")
+        partial = write_file(interrupted / "partial.jpg", b"22")
+        broken = mock.Mock()
+        broken.path = os.fspath(interrupted / "unclassified")
+        broken.is_symlink.return_value = False
+        broken.is_junction.return_value = False
+        broken.stat.side_effect = PermissionError("unreadable metadata")
+        real_scandir = os.scandir
+
+        def partial_entries():
+            with real_scandir(interrupted) as iterator:
+                yield from iterator
+            yield broken
+            raise OSError("directory iteration interrupted")
+
+        def scandir(directory):
+            if directory == denied:
+                raise PermissionError("unreadable directory")
+            if directory == interrupted:
+                return nullcontext(partial_entries())
+            return real_scandir(directory)
+
+        coverage = ScanCoverage()
+        snapshots = []
+        issues: list[ScanIssue] = []
+        with mock.patch.object(core.os, "scandir", side_effect=scandir):
+            entries = collect_files(
+                self.a, issues=issues, coverage=coverage, on_coverage=snapshots.append
+            )
+        self.assertCountEqual([item.path for item in entries], [first, partial])
+        self.assertEqual(coverage, ScanCoverage(
+            folders=2, files=2, included_files=2, entry_errors=1, directory_errors=2,
+        ))
+        self.assertEqual(snapshots[0], ScanCoverage())
+        self.assertEqual(snapshots[-1], coverage)
+        self.assertCountEqual([(issue.path, issue.stage) for issue in issues], [
+            (denied, "enumerate"), (interrupted, "enumerate"),
+            (Path(broken.path), "enumerate"),
+        ])
+
+    def test_cancel_preserves_partial_counts_and_candidate_availability(self) -> None:
+        for name in ("a.jpg", "b.jpg"):
+            write_file(self.a / name, b"same")
+        for cancel_stage, expected in (
+            ("enumerate", ScanCoverage(files=1, included_files=1)),
+            ("hash", ScanCoverage(files=2, included_files=2, hash_candidates=2)),
+            ("verify", ScanCoverage(files=2, included_files=2, hash_candidates=2)),
+        ):
+            with self.subTest(stage=cancel_stage):
+                cancelled = False
+                snapshots = []
+
+                def on_progress(stage, done, _total):
+                    nonlocal cancelled
+                    if stage == cancel_stage and done:
+                        cancelled = True
+
+                with mock.patch.object(core, "sha256_file", wraps=core.sha256_file) as sha256:
+                    result = find_internal_duplicates(
+                        self.a, threads=1, should_cancel=lambda: cancelled,
+                        on_progress=on_progress, on_coverage=snapshots.append,
+                    )
+                self.assertTrue(result.cancelled)
+                self.assertEqual(result.scanned_files, expected.included_files)
+                self.assertEqual(result.coverage, expected)
+                self.assertEqual(snapshots[-1], expected)
+                if cancel_stage == "enumerate":
+                    sha256.assert_not_called()
+
+    def test_coverage_snapshots_are_throttled_and_callback_failures_are_isolated(self) -> None:
+        for size in range(1, 11):
+            write_file(self.a / f"unique-{size}.bin", b"x" * size)
+        visits = 0
+        classify = core._classify_entry
+        snapshots = []
+
+        def tick(entry):
+            nonlocal visits
+            visits += 1
+            return classify(entry)
+
+        def receive(snapshot):
+            snapshots.append(snapshot)
+            if len(snapshots) == 1:
+                snapshot.files = -1
+                raise RuntimeError("observer failed")
+
+        with mock.patch.object(core, "_classify_entry", side_effect=tick), \
+             mock.patch.object(core, "time", SimpleNamespace(monotonic=lambda: (visits // 4) / 8)), \
+             mock.patch.object(core, "sha256_file") as sha256:
+            result = find_internal_duplicates(self.a, on_coverage=receive)
+
+        sha256.assert_not_called()
+        self.assertEqual([(item.files, item.hash_candidates) for item in snapshots], [
+            (-1, None), (4, None), (8, None), (10, None), (10, 0),
+        ])
+        self.assertFalse(snapshots[-3].enumeration_complete)
+        self.assertTrue(snapshots[-2].enumeration_complete)
+        self.assertEqual(len({id(item) for item in snapshots}), len(snapshots))
+        self.assertIsNot(snapshots[-1], result.coverage)
+        self.assertEqual(result.coverage, ScanCoverage(
+            files=10, included_files=10, hash_candidates=0, enumeration_complete=True,
+        ))
+        self.assertEqual((result.scanned_files, result.hashed_files), (10, 0))
+        self.assertEqual(result.groups, [])
+
+    def test_hash_failures_do_not_reduce_candidate_denominator(self) -> None:
+        first = write_file(self.a / "first.bin", b"same")
+        second = write_file(self.a / "second.bin", b"same")
+        real_sha256 = core.sha256_file
+        snapshots = []
+        candidate_at_hash = []
+        progress = []
+
+        def hash_file(path, **kwargs):
+            candidate_at_hash.append(snapshots[-1].hash_candidates)
+            if path == second:
+                raise PermissionError("unreadable file content")
+            return real_sha256(path, **kwargs)
+
+        with mock.patch.object(core, "sha256_file", side_effect=hash_file):
+            result = find_internal_duplicates(
+                self.a, threads=1, on_coverage=snapshots.append,
+                on_progress=lambda *args: progress.append(args),
+            )
+        self.assertEqual(candidate_at_hash, [2, 2])
+        self.assertIn(("hash", 2, 2), progress)
+        self.assertEqual(result.hashed_files, 1)
+        self.assertEqual(result.hashed_bytes, first.stat().st_size)
+        self.assertEqual(result.coverage, ScanCoverage(
+            files=2, included_files=2, hash_candidates=2, enumeration_complete=True,
+        ))
+        self.assertEqual([(issue.path, issue.stage) for issue in result.issues], [(second, "hash")])
+        self.assertEqual(result.groups, [])
 
 
 # ---------------------------------------------------------------------------
@@ -1053,9 +1263,18 @@ class ContractShapeTests(unittest.TestCase):
         inner = inspect.signature(core.find_internal_duplicates)
         self.assertEqual(
             list(inner.parameters),
-            ["root", "scope", "keep_strategy", "threads", "should_cancel", "on_progress"],
+            ["root", "scope", "keep_strategy", "threads", "should_cancel", "on_progress", "on_coverage"],
         )
         self.assertEqual(inner.parameters["keep_strategy"].default, "shallowest")
+        collect = inspect.signature(core.collect_files)
+        self.assertEqual(
+            list(collect.parameters),
+            ["root", "scope", "should_cancel", "on_progress", "issues", "coverage", "on_coverage"],
+        )
+        for signature, names in ((inner, ("on_coverage",)), (collect, ("coverage", "on_coverage"))):
+            for name in names:
+                self.assertIsNone(signature.parameters[name].default)
+                self.assertEqual(signature.parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
         self.assertEqual(
             str(inspect.signature(core.classify_media_type)),
             "(path: 'Path | str') -> 'MediaType'",
@@ -1079,9 +1298,17 @@ class ContractShapeTests(unittest.TestCase):
         self.assertEqual(list(core.HashMismatch.__dataclass_fields__), ["keeper", "other", "sha256"])
         self.assertEqual(list(core.ScanIssue.__dataclass_fields__), ["path", "stage", "message"])
         self.assertEqual(
-            list(core.ScanResult.__dataclass_fields__),
-            ["groups", "mismatches", "issues", "scanned_files", "hashed_files", "hashed_bytes", "cancelled"],
+            list(core.ScanCoverage.__dataclass_fields__),
+            ["folders", "files", "included_files", "zero_byte_files", "filtered_files",
+             "skipped_links", "other_entries", "entry_errors", "directory_errors",
+             "hash_candidates", "enumeration_complete"],
         )
+        self.assertEqual(
+            list(core.ScanResult.__dataclass_fields__),
+            ["groups", "mismatches", "issues", "scanned_files", "hashed_files", "hashed_bytes",
+             "cancelled", "coverage"],
+        )
+        self.assertIsNone(core.ScanResult().coverage)
         self.assertEqual(list(core.RecycleOutcome.__dataclass_fields__), ["target", "status", "reason"])
 
     def test_media_extensions_cover_contract_samples(self) -> None:

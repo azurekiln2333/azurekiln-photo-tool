@@ -96,3 +96,17 @@ InfoBar.error(...)   # 错误用 error，duration 2600
 - ❌ 不要在控件里硬编码中文字符串（走 `self.tr(...)`）。
 - ❌ 不要硬编码图标路径。
 - ❌ 不要把需要用户注意的提示做成弹窗 `QMessageBox`（阻塞且打断流程），用内嵌提示或 InfoBar。
+
+## 大缩略图结果表的滚轮
+
+`folder_dedupe_gui.py` 和 `dir_compare_gui.py` 的104px缩略图行复用
+`dedupe_table_scroll.configure_result_table_scrolling(table: QAbstractItemView) -> None`，
+在设置行高后调用。不改变其它页面的滚动。标准滚轮一格约48px，不能随大行高跳多行。
+
+- 设置 `ScrollPerPixel` 及按系统 `wheelScrollLines` 折算的 `singleStep`；Fluent的
+  `scrollDelagate.verticalSmoothScroll` 两套引擎 `stepRatio=1.0`、`acceleration=0`，保留动画。
+- 仅改Qt滚动条步长不足以限制Fluent的额外倍率与加速。缺少Fluent代理的裸Qt fallback也须可用。
+- viewport优先消费非零垂直 `pixelDelta`，直接按像素滚动并accept，不重发事件。
+  同时有angleDelta时不能再额外滚动；配置重复调用不得重复安装过滤器。
+- 真实 `QWheelEvent` 覆盖固定/自适应两套引擎，等待动画结束后断言40–60px；
+  触控板正负像素及同时带角度增量必须只移动一次，不能仅断言配置常量。

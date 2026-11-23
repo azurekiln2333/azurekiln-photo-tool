@@ -16,7 +16,7 @@ import hashlib
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Callable, Iterable, Literal
 
@@ -37,6 +37,7 @@ __all__ = [
     "ProgressCallback",
     "RecycleOutcome",
     "ScanCancelled",
+    "ScanCoverage",
     "ScanIssue",
     "ScanResult",
     "ScanScope",
@@ -225,6 +226,23 @@ class ScanIssue:
 
 
 @dataclass
+class ScanCoverage:
+    """单次扫描已发现的目录项统计；不推算未能枚举的后代。"""
+
+    folders: int = 0
+    files: int = 0
+    included_files: int = 0
+    zero_byte_files: int = 0
+    filtered_files: int = 0
+    skipped_links: int = 0
+    other_entries: int = 0
+    entry_errors: int = 0
+    directory_errors: int = 0
+    hash_candidates: int | None = None
+    enumeration_complete: bool = False
+
+
+@dataclass
 class ScanResult:
     groups: list[DuplicateGroup] = field(default_factory=list)
     mismatches: list[HashMismatch] = field(default_factory=list)
@@ -233,6 +251,7 @@ class ScanResult:
     hashed_files: int = 0
     hashed_bytes: int = 0
     cancelled: bool = False
+    coverage: ScanCoverage | None = None
 
 
 SkipReason = Literal[
@@ -376,6 +395,27 @@ class _ProgressReporter:
             pass
 
 
+class _CoverageReporter:
+    """约每 100 ms 发布一次独立快照，阶段边界可强制发布。"""
+
+    def __init__(self, callback: Callable[[ScanCoverage], None] | None) -> None:
+        self._callback = callback
+        self._last_time = float("-inf")
+
+    def __call__(self, coverage: ScanCoverage | None, *, force: bool = False) -> None:
+        if self._callback is None or coverage is None:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_time < 0.1:
+            return
+        self._last_time = now
+        try:
+            self._callback(replace(coverage))
+        except Exception:
+            # 展示回调失败不影响扫描结果。
+            pass
+
+
 def _classify_entry(entry: os.DirEntry) -> tuple[str, os.stat_result | None]:
     """判定条目类型：返回 ("link" | "dir" | "file" | "other", stat)。
 
@@ -449,6 +489,8 @@ def collect_files(
     should_cancel: CancelCheck | None = None,
     on_progress: ProgressCallback | None = None,
     issues: list[ScanIssue] | None = None,
+    coverage: ScanCoverage | None = None,
+    on_coverage: Callable[[ScanCoverage], None] | None = None,
 ) -> list[FileEntry]:
     """递归枚举 root 下的文件（不返回目录）。
 
@@ -457,28 +499,43 @@ def collect_files(
     - 跳过 0 字节文件（本工具只做内容去重，空文件无意义）。
     - ``scope="media"`` 时只保留 ``MEDIA_EXTENSIONS`` 中的扩展名。
     - 任何枚举/stat 错误写入 ``issues``，不抛出；结果按路径大小写不敏感排序。
+    - 可用 ``coverage`` 接收本次枚举计数，或用 ``on_coverage`` 接收节流快照。
     """
     root_path = _absolute_root(root)
     collected: list[FileEntry] = []
     reporter = _ProgressReporter(on_progress)
+    report_coverage = _CoverageReporter(on_coverage)
+    if coverage is not None:
+        # 提供的对象是本次扫描的输出，不沿用上次计数。
+        for item in fields(ScanCoverage):
+            setattr(coverage, item.name, item.default)
+    elif on_coverage is not None:
+        coverage = ScanCoverage()
+    report_coverage(coverage, force=True)
 
     if not root_path.is_dir():
         if issues is not None:
             issues.append(
                 ScanIssue(path=root_path, stage="enumerate", message="目录不存在或不是目录")
             )
+        if coverage is not None:
+            coverage.directory_errors += 1
+        report_coverage(coverage, force=True)
         return collected
 
     scope_media = scope == "media"
+    cancelled = False
     stack: list[Path] = [root_path]
     while stack:
         if _is_cancelled(should_cancel):
+            cancelled = True
             break
         directory = stack.pop()
         try:
             with os.scandir(directory) as iterator:
                 for entry in iterator:
                     if _is_cancelled(should_cancel):
+                        cancelled = True
                         break
                     entry_path = Path(entry.path)
                     try:
@@ -490,37 +547,62 @@ def collect_files(
                                     path=entry_path, stage="enumerate", message=_describe_error(exc)
                                 )
                             )
+                        if coverage is not None:
+                            coverage.entry_errors += 1
+                        report_coverage(coverage)
                         continue
 
                     if kind == "link":
-                        continue
-                    if kind == "dir":
+                        if coverage is not None:
+                            coverage.skipped_links += 1
+                    elif kind == "dir":
                         stack.append(entry_path)
-                        continue
-                    if kind != "file" or stat_result is None:
-                        continue
-                    if stat_result.st_size <= 0:
-                        continue
-                    if scope_media and _suffix(entry.name) not in MEDIA_EXTENSIONS:
-                        continue
-                    collected.append(
-                        FileEntry(
-                            path=entry_path,
-                            root=root_path,
-                            size=int(stat_result.st_size),
-                            mtime_ns=int(stat_result.st_mtime_ns),
-                            file_id=(int(stat_result.st_dev), int(stat_result.st_ino)),
+                        if coverage is not None:
+                            coverage.folders += 1
+                    elif kind != "file" or stat_result is None:
+                        if coverage is not None:
+                            coverage.other_entries += 1
+                    elif stat_result.st_size <= 0:
+                        if coverage is not None:
+                            coverage.files += 1
+                            coverage.zero_byte_files += 1
+                    elif scope_media and _suffix(entry.name) not in MEDIA_EXTENSIONS:
+                        if coverage is not None:
+                            coverage.files += 1
+                            coverage.filtered_files += 1
+                    else:
+                        collected.append(
+                            FileEntry(
+                                path=entry_path,
+                                root=root_path,
+                                size=int(stat_result.st_size),
+                                mtime_ns=int(stat_result.st_mtime_ns),
+                                file_id=(int(stat_result.st_dev), int(stat_result.st_ino)),
+                            )
                         )
-                    )
-                    reporter("enumerate", len(collected), 0)
+                        if coverage is not None:
+                            coverage.files += 1
+                            coverage.included_files += 1
+                        reporter("enumerate", len(collected), 0)
+                    report_coverage(coverage)
         except Exception as exc:  # 目录枚举失败：记录问题，继续其他目录
             if issues is not None:
                 issues.append(
                     ScanIssue(path=directory, stage="enumerate", message=_describe_error(exc))
                 )
+            if coverage is not None:
+                coverage.directory_errors += 1
+            report_coverage(coverage)
+        if cancelled:
+            break
 
     collected.sort(key=_path_sort_key)
     reporter("enumerate", len(collected), 0, force=True)
+    if coverage is not None:
+        coverage.enumeration_complete = not (
+            cancelled or coverage.entry_errors or coverage.directory_errors
+        )
+    report_coverage(coverage, force=True)
     return collected
 
 
@@ -802,24 +884,36 @@ def find_internal_duplicates(
     threads: int = 4,
     should_cancel: CancelCheck | None = None,
     on_progress: ProgressCallback | None = None,
+    on_coverage: Callable[[ScanCoverage], None] | None = None,
 ) -> ScanResult:
     """目录内去重：按内容分组，每组保留 1 个（按 keep_strategy），其余列为回收候选。
 
     - 只有 size 组内 >1 的文件才计算哈希。
     - 每组至少保留一个文件；keeper 永远不出现在 duplicates 里。
     - 只有 duplicates 非空的组才输出。
+    - ``coverage`` 随结果返回；可用 ``on_coverage`` 订阅枚举及候选数快照。
     """
     if keep_strategy not in ("shallowest", "oldest", "newest"):
         raise ValueError(f"unknown_strategy:{keep_strategy}")
 
     root_path = _absolute_root(root)
-    result = ScanResult()
+    coverage = ScanCoverage()
+    result = ScanResult(coverage=coverage)
+    report_coverage = _CoverageReporter(on_coverage)
+
+    def mark_cancelled() -> None:
+        result.cancelled = True
+        if coverage.enumeration_complete:
+            coverage.enumeration_complete = False
+            report_coverage(coverage, force=True)
+
     entries = collect_files(
-        root_path, scope, should_cancel=should_cancel, on_progress=on_progress, issues=result.issues
+        root_path, scope, should_cancel=should_cancel, on_progress=on_progress,
+        issues=result.issues, coverage=coverage, on_coverage=on_coverage,
     )
     result.scanned_files = len(entries)
     if _is_cancelled(should_cancel):
-        result.cancelled = True
+        mark_cancelled()
         return result
 
     by_size: dict[int, list[FileEntry]] = {}
@@ -832,10 +926,12 @@ def find_internal_duplicates(
         if len(group) > 1:
             hash_targets.extend(group)
 
+    coverage.hash_candidates = len(hash_targets)
+    report_coverage(coverage, force=True)
     reporter = _ProgressReporter(on_progress)
     hashes, hash_cancelled = _hash_many(hash_targets, threads, should_cancel, reporter, result)
     if hash_cancelled or _is_cancelled(should_cancel):
-        result.cancelled = True
+        mark_cancelled()
         return result
 
     by_hash: dict[tuple[int, str], list[FileEntry]] = {}
@@ -884,10 +980,14 @@ def find_internal_duplicates(
         if cancelled:
             break
 
-    result.cancelled = cancelled
-    if not cancelled:
+    if cancelled:
+        mark_cancelled()
+    else:
         reporter("verify", total_pairs, total_pairs, force=True)
     result.groups = _build_groups(buckets, keepers)
+    # 最后一次复核/进度回调也可能收到取消，返回前仍须保留取消语义。
+    if not result.cancelled and _is_cancelled(should_cancel):
+        mark_cancelled()
     return result
 
 

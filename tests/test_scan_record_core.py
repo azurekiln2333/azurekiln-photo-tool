@@ -13,6 +13,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -293,6 +294,37 @@ class InternalRecordTest(_TempCase):
         self.assertEqual(core.classify_duplicate_group(loaded.result.groups[1]), "photo")
         self.assertEqual(loaded.row_states, record.row_states)
 
+    def test_live_coverage_is_not_persisted_in_v1(self) -> None:
+        v1_record = self._build()
+        v1_record.result.hashed_files = 2
+        v1_record.result.hashed_bytes = 20
+        coverage = core.ScanCoverage(
+            folders=1,
+            files=4,
+            included_files=3,
+            zero_byte_files=1,
+            hash_candidates=2,
+            enumeration_complete=True,
+        )
+        live_record = replace(v1_record, result=replace(v1_record.result, coverage=coverage))
+        target = self.path("internal-with-coverage.json")
+        records.save_record(target, live_record)
+
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(
+            set(payload),
+            {"schema_version", "mode", "created_at", "roots", "options", "result", "row_states", "stale"},
+        )
+        self.assertEqual(
+            set(payload["result"]),
+            {"groups", "mismatches", "issues", "scanned_files", "hashed_files", "hashed_bytes", "cancelled"},
+        )
+        loaded = records.load_record(target, expected_mode="internal")
+        self.assertIsNone(loaded.result.coverage)
+        self.assertEqual(loaded, v1_record)
+        self.assertIs(live_record.result.coverage, coverage)
+
     def test_internal_single_keeper_group_v1_roundtrip_classifies_by_keeper(self) -> None:
         record = self._build()
         target = self.path("internal-single-keeper-v1.json")
@@ -365,6 +397,25 @@ class BadInputTest(_TempCase):
         del payload["options"]
         with self.assertRaises(ValueError):
             records.load_record(self._write(payload))
+
+    def test_v1_rejects_coverage_as_unknown_field(self) -> None:
+        # 复用 v1 空记录内容，构造没有 coverage 字段的历史目录内记录。
+        payload = {
+            **self.payload,
+            "schema_version": 1,
+            "mode": "internal",
+            "roots": {"a": os.fspath(self.root_a), "b": None},
+        }
+        loaded = records.load_record(self._write(payload), expected_mode="internal")
+        self.assertIsNone(loaded.result.coverage)
+
+        for location, mutated in (
+            ("record", {**payload, "coverage": None}),
+            ("result", {**payload, "result": {**payload["result"], "coverage": None}}),
+        ):
+            with self.subTest(location=location):
+                with self.assertRaisesRegex(ValueError, "coverage"):
+                    records.load_record(self._write(mutated), expected_mode="internal")
 
     def test_bad_options(self) -> None:
         for key, value in (("scope", "videos"), ("keep_strategy", "random")):

@@ -42,6 +42,19 @@ def reselect_internal_keeper(
 - `reselect_internal_keeper(group, new_keeper)` 是无文件系统 I/O 的结构转换：返回新的 `DuplicateGroup`，不修改原 group/list；SHA-256、size 保持，剩余成员（含旧 keeper）按既有路径规则确定性排序。
 - 重选要求组内所有成员同根、size 与组一致、规范化路径唯一；候选必须匹配已有成员完整快照（path/root/size/mtime_ns/file_id），返回组内成员对象。跨根 compare 组、外来或篡改快照必须拒绝，不得反转 A/B。
 - helper 不验证磁盘状态、不执行回收，也不决定 UI 勾选；页面负责非忙、非 stale/cancelled、当前组、未处理状态与候选存在/size/mtime 守卫。真实回收仍走下述执行前复核，不能用“重选成功”代替安全验证。
+- 软件默认keeper只是初始选择；目录内去重必须有清晰的行级“保留此份”入口，允许未处理组任一副本接任，也能切回。回收checkbox仅表示待移入回收站，不能作为keeper选择的替代。新keeper未勾选且status_keep，旧keeper成为勾选的status_pending，所有行的keeper引用与result.groups同步。
+
+### 分类独立回收
+
+照片、视频、其他是整组分类。切换分类不改源行索引、勾选状态或keeper。
+当前分类的合法勾选目标必须同时决定回收按钮可用性、确认框数量/容量和worker提交列表；
+不能只隐藏行而仍遍历全模型回收。其它分类的勾选、状态保持，之后可单独执行。
+全选、清空和反选也仅作用当前分类。全局可回收容量如继续展示，必须与“当前分类已选”容量明确区分。
+
+正常：照片、视频、其他均默认勾选，当前照片回收仅提交照片目标；随后切视频可继续。
+基线：当前分类没有勾选目标，即使其它分类有勾选也禁用回收。
+异常：stale、cancelled、busy和已处理目标仍不可提交，不能借切换分类重新授权。
+回归要实际点击分类和回收按钮并使用真实worker、mock send2trash，断言隐藏类没有进入回收。
 
 ### 校验 / ValueError 矩阵
 

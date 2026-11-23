@@ -28,6 +28,7 @@
 | [线程与异步](./threading-and-workers.md) | QThread + Worker + 信号 + 主线程 drain 模式 |
 | [共享媒体预览](./shared-previews.md) | 等宽槽位、长路径、视频后端、有限重试与缓存代号 |
 | [媒体统计与目录说明](../python/media-statistics.md) | 跨层计数/说明接口、草稿守卫与异步关闭契约 |
+| [去重扫描覆盖统计](../python/scan-coverage.md) | 后台快照、文件总数与 Hash 候选、取消/失败和历史未知展示 |
 | [多语言文案](./translations.md) | zh/en 翻译机制、翻译键约定 |
 | [质量约定](./quality-guidelines.md) | GUI 冒烟测试、布局、可访问性 |
 

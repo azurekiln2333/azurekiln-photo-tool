@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -30,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from PyQt6.QtCore import QEvent, Qt  # noqa: E402
 from PyQt6.QtGui import QImage  # noqa: E402
+from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 import folder_dedupe_gui as g  # noqa: E402
@@ -648,19 +650,35 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
 
     def _typed_scan(self) -> Path:
         root = self._make_typed_duplicates()
+        self.window.scope_combo.setCurrentIndex(self.window.scope_combo.findData(g.SCOPE_ALL))
+        self.window._set_keep_strategy(g.KEEP_SHALLOWEST)
         self._run_scan(root)
         self.assertEqual(set(self.window.category_buttons), {"photo", "video", "other"})
         return root
 
+    def _mouse_set_keeper(self, row_index: int):
+        """点击行内保留入口，不用直接调用角色转换方法或只改当前选择。"""
+        self.window.show()
+        index = self.window.table_model.index(row_index, g.COL_ROLE)
+        self.window.table.scrollTo(index)
+        self.app.processEvents()
+        rectangle = self.window.table.visualRect(index)
+        self.assertFalse(rectangle.isEmpty(), "行内保留入口没有可点击区域")
+        self.assertTrue(self.window.table.viewport().rect().contains(rectangle.center()))
+        QTest.mouseClick(self.window.table.viewport(), Qt.MouseButton.LeftButton,
+                         pos=rectangle.center())
+        self.app.processEvents()
+
     def _assert_space(self, total: int, selected: int):
         self.assertEqual(self.window._reclaimable_sizes(), (total, selected))
-        self.assertEqual(
-            self.window.space_summary.text(),
-            self.window.tr(
-                "space_summary", total=g._format_size(total),
-                selected=g._format_size(selected),
-            ),
-        )
+        text = self.window.space_summary.text()
+        self.assertIn(g._format_size(total), text)
+        self.assertIn(g._format_size(selected), text)
+        zh_label, en_label = self._category_labels(self.window.active_category)
+        self.assertIn(zh_label if self.window.lang == "zh" else en_label.casefold(),
+                      text if self.window.lang == "zh" else text.casefold(),
+                      "容量必须明确当前分类，而不是隐藏分类的全局勾选")
+        self.assertNotIn("space_summary", text)
 
     def test_space_estimate_excludes_ineligible_rows_without_file_io(self):
         root = self.tmp / "snapshot-only"
@@ -685,6 +703,11 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
         )
         self.window._apply_scan_result(ScanResult())
         self.window.table_model.reset_rows(rows)
+        self.window._row_categories = [
+            classify_media_type(row.primary_path()) if row.primary_path() else "photo"
+            for row in rows
+        ]
+        self.window.active_category = "photo"
         with mock.patch.object(Path, "stat", side_effect=AssertionError("unexpected stat")), \
                 mock.patch.object(Path, "open", side_effect=AssertionError("unexpected open")), \
                 mock.patch("builtins.open", side_effect=AssertionError("unexpected open")):
@@ -711,7 +734,8 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
             for group in self.window._current_result.groups
         }
         total = 2 * sum(sizes.values())
-        self._assert_space(total, total)
+        self.window.btn_filter_photo.click()
+        self._assert_space(total, 2 * sizes["photo"])
         for category in ("photo", "video", "other"):
             self.window.category_buttons[category].click()
             self.window.btn_select_none.click()
@@ -724,10 +748,12 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
         self.window.btn_invert.click()
         self.window.category_buttons["video"].click()
         self.window.btn_select_all.click()
-        selected = 2 * (sizes["photo"] + sizes["video"])
+        self._assert_space(total, 2 * sizes["video"])
         self.window.category_buttons["other"].click()
-        self._assert_space(total, selected)
+        self._assert_space(total, 0)
         self.window.category_buttons["photo"].click()
+        selected = 2 * sizes["photo"]
+        self._assert_space(total, selected)
         index, candidate = next(
             (index, row) for index, row in enumerate(self.window.table_model.rows)
             if row.kind == g.KIND_DUPLICATE
@@ -738,8 +764,8 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
         self.assertEqual(candidate.kind, g.KIND_KEEPER)
         self._assert_space(total, selected)
         for language, label, tooltip in (
-            ("en", "Estimated reclaimable:", "emptying the recycle bin"),
-            ("zh", "预计可腾出：", "清空回收站"),
+            ("en", "Estimated reclaimable", "emptying the recycle bin"),
+            ("zh", "预计可腾出", "清空回收站"),
         ):
             self.window.lang = language
             self.window._apply_language()
@@ -750,8 +776,11 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
 
     def test_space_estimate_roundtrip_and_real_recycle_updates(self):
         self._typed_scan()
-        total = 2 * sum(group.size for group in self.window._current_result.groups)
-        self._assert_space(total, total)
+        sizes = {classify_duplicate_group(group): group.size
+                 for group in self.window._current_result.groups}
+        total = 2 * sum(sizes.values())
+        self.window.btn_filter_photo.click()
+        self._assert_space(total, 2 * sizes["photo"])
         record_path = self.tmp / "space-roundtrip.json"
         with mock.patch.object(
             g.QFileDialog, "getSaveFileName", return_value=(str(record_path), "")
@@ -763,23 +792,27 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
         self._assert_space(0, 0)
         self.assertTrue(self._import(record_path))
         self.assertTrue(_pump(self.app, lambda: not self.window._is_busy()))
-        self._assert_space(total, total)
-        targets = {row.entry.path for row in self._duplicate_rows()}
-        with mock.patch.object(duplicate_scan_core, "send2trash") as trash, \
-                mock.patch.object(
-                    g.QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
-                ):
-            self.window.btn_recycle.click()
-            self.assertTrue(_pump(self.app, lambda: (
-                self.window._recycle_thread is None
-                and not self.window._is_busy()
-                and self.window._pending_recycle_result is None
-                and not self.window._process_update_queue
-            )), "回收UI尚未排空")
-        self.assertEqual({Path(call.args[0]) for call in trash.call_args_list}, targets)
-        self.assertEqual(trash.call_count, len(targets))
+        self._assert_space(total, 2 * sizes["photo"])
+        for category in ("photo", "video", "other"):
+            self.window.category_buttons[category].click()
+            targets = {row.entry.path for row in self._duplicate_rows()
+                       if self._category_for_group(row.group_id) == category}
+            with mock.patch.object(duplicate_scan_core, "send2trash") as trash, \
+                    mock.patch.object(
+                        g.QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+                    ):
+                self.window.btn_recycle.click()
+                self.assertTrue(_pump(self.app, lambda: (
+                    self.window._recycle_thread is None
+                    and not self.window._is_busy()
+                    and self.window._pending_recycle_result is None
+                    and not self.window._process_update_queue
+                )), "回收UI尚未排空")
+            self.assertEqual({Path(call.args[0]) for call in trash.call_args_list}, targets)
+            self.assertEqual(trash.call_count, len(targets))
+            total -= 2 * sizes[category]
+            self._assert_space(total, 0)
         self.assertTrue(all(row.status == "status_recycled" for row in self._duplicate_rows()))
-        self._assert_space(0, 0)
 
     def test_three_category_buttons_show_correct_counts_and_preserve_source_rows(self):
         self._typed_scan()
@@ -959,6 +992,158 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
         self.assertTrue(all(keeper == new_keeper_row.entry.path for _target, keeper, _verify in calls))
         self.assertTrue(all(verify for _target, _keeper, verify in calls))
 
+    def test_row_keeper_mouse_roundtrip_excludes_new_keeper_from_real_worker(self):
+        self._typed_scan()
+        self.window.lang = "zh"
+        self.window._apply_language()
+        self.window.btn_filter_photo.click()
+        group_id = next(
+            number for number, group in enumerate(self.window._current_result.groups, 1)
+            if classify_duplicate_group(group) == "photo"
+        )
+        group_rows = sorted(self._group_rows(group_id), key=lambda item: str(item[1].entry.path))
+        (a_index, a), (b_index, b), (_c_index, c) = group_rows
+        self.assertEqual(a.entry.path.parent.name, "a")
+        self.assertEqual(a.kind, g.KIND_KEEPER, "软件默认必须按保留策略先选 A")
+        self.assertTrue(b.checked)
+        c.checked = False
+        self.window._on_row_check_changed()
+        original_paths = [row.primary_path() for row in self.window.table_model.rows]
+
+        self._mouse_set_keeper(b_index)
+        self.assertEqual(b.kind, g.KIND_KEEPER)
+        self.assertFalse(b.checked)
+        self.assertFalse(self.window.table_model._checkable(b))
+        self.assertEqual(a.status, "status_pending")
+        self.assertTrue(a.checked)
+        self.assertFalse(c.checked, "其它副本的合法勾选不能被重选覆盖")
+        self.assertEqual(self.window._current_result.groups[group_id - 1].keeper.path, b.entry.path)
+        # 用户可以切回软件默认项，再切到 B；不能把原 keeper 或新 keeper 锁死。
+        self._mouse_set_keeper(a_index)
+        self.assertEqual(a.kind, g.KIND_KEEPER)
+        self._mouse_set_keeper(b_index)
+        self.assertEqual(b.kind, g.KIND_KEEPER)
+        self.assertEqual([row.primary_path() for row in self.window.table_model.rows], original_paths)
+
+        record_path = self.tmp / "mouse-keeper.json"
+        expected_states = self.window._runtime_row_states()
+        with mock.patch.object(g.QFileDialog, "getSaveFileName", return_value=(str(record_path), "JSON")):
+            self.window.btn_export_record.click()
+            self.assertTrue(_pump(self.app, lambda: not self.window._is_busy()))
+        saved = load_record(record_path, expected_mode="internal")
+        self.assertEqual(saved.result.groups[group_id - 1].keeper.path, b.entry.path)
+        self.window._reset_results()
+        self.assertTrue(self._import(record_path))
+        self.assertTrue(_pump(self.app, lambda: not self.window._is_busy()))
+        self.assertEqual(self.window._runtime_row_states(), expected_states)
+        self.window.btn_filter_photo.click()
+        self.window.byte_verify_check.setChecked(False)
+        real_worker = g.DedupeRecycleWorker
+        with mock.patch.object(g, "DedupeRecycleWorker", wraps=real_worker) as worker, \
+                mock.patch.object(g, "recycle_duplicate", wraps=g.recycle_duplicate) as verify, \
+                mock.patch.object(duplicate_scan_core, "send2trash") as trash, \
+                mock.patch.object(g.QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            QTest.mouseClick(self.window.btn_recycle, Qt.MouseButton.LeftButton)
+            self.assertTrue(_pump(self.app, lambda: not self.window._is_busy()))
+        worker.assert_called_once()
+        items, byte_verify = worker.call_args.args
+        self.assertTrue(byte_verify, "导入记录必须强制逐字节复核")
+        self.assertEqual({target.path for _index, target, _keeper in items}, {a.entry.path})
+        self.assertTrue(all(keeper.path == b.entry.path for _index, _target, keeper in items))
+        self.assertNotIn(b.entry.path, {target.path for _index, target, _keeper in items})
+        verify.assert_called_once()
+        self.assertTrue(verify.call_args.kwargs["byte_verify"])
+        trash.assert_called_once_with(str(a.entry.path))
+        self.assertTrue(b.entry.path.exists(), "新 keeper 不能进入回收路径")
+
+    def test_current_category_recycle_uses_real_worker_and_leaves_hidden_targets_pending(self):
+        self._typed_scan()
+        self.window.show()
+        self.window.lang = "zh"
+        self.window._apply_language()
+        self.app.processEvents()
+        self.assertTrue(all(row.checked for row in self._duplicate_rows()))
+        by_category = {
+            category: [(index, row) for index, row in enumerate(self.window.table_model.rows)
+                       if row.kind == g.KIND_DUPLICATE
+                       and self._category_for_group(row.group_id) == category]
+            for category in ("photo", "video", "other")
+        }
+        all_pending_bytes = sum(row.size() for row in self._duplicate_rows())
+        coverage_before = vars(self.window._scan_coverage).copy()
+        completed_categories = set()
+        for category in ("photo", "video", "other"):
+            with self.subTest(category=category):
+                QTest.mouseClick(self.window.category_buttons[category], Qt.MouseButton.LeftButton)
+                self.app.processEvents()
+                expected = by_category[category]
+                expected_paths = {row.entry.path for _index, row in expected}
+                expected_bytes = sum(row.size() for _index, row in expected)
+                self.assertTrue(self.window.btn_recycle.isEnabled())
+                self.assertRegex(self.window.btn_recycle.text(),
+                                 self._category_labels(category)[0] + "|当前分类")
+                self.assertEqual(self.window._reclaimable_sizes(), (all_pending_bytes, expected_bytes))
+                other_states = {
+                    row.primary_path(): (row.checked, row.status)
+                    for index, row in enumerate(self.window.table_model.rows)
+                    if not self.window._row_is_visible(index)
+                }
+                real_worker = g.DedupeRecycleWorker
+                with mock.patch.object(g, "DedupeRecycleWorker", wraps=real_worker) as worker, \
+                        mock.patch.object(duplicate_scan_core, "send2trash") as trash, \
+                        mock.patch.object(g.QMessageBox, "question",
+                                          return_value=QMessageBox.StandardButton.Yes) as confirm:
+                    QTest.mouseClick(self.window.btn_recycle, Qt.MouseButton.LeftButton)
+                    self.assertTrue(_pump(self.app, lambda: (
+                        not self.window._is_busy() and self.window._recycle_thread is None
+                        and self.window._pending_recycle_result is None
+                        and not self.window._process_update_queue
+                    )))
+                worker.assert_called_once()
+                items = worker.call_args.args[0]
+                self.assertEqual({(index, entry.path) for index, entry, _keeper in items},
+                                 {(index, row.entry.path) for index, row in expected})
+                self.assertEqual({Path(call.args[0]) for call in trash.call_args_list}, expected_paths)
+                self.assertEqual(trash.call_count, 2)
+                confirm.assert_called_once()
+                prompt = confirm.call_args.args[2]
+                self.assertIn(self._category_labels(category)[0], prompt)
+                self.assertIn(g._format_size(expected_bytes), prompt)
+                self.assertIn(f"{len(expected)} 个", prompt,
+                              "确认框数量必须与本分类实际提交目标数一致")
+                self.assertTrue(all(row.status == "status_recycled" for _index, row in expected))
+                self.assertEqual({row.primary_path(): (row.checked, row.status)
+                                  for index, row in enumerate(self.window.table_model.rows)
+                                  if not self.window._row_is_visible(index)}, other_states)
+                completed_categories.add(category)
+                self.assertTrue(all(row.checked and row.status == "status_pending"
+                                    for hidden in by_category if hidden not in completed_categories
+                                    for _index, row in by_category[hidden]))
+                self.assertFalse(self.window.btn_recycle.isEnabled(), "本分类已无待处理目标")
+                all_pending_bytes -= expected_bytes
+                self.assertEqual(self.window._reclaimable_sizes(), (all_pending_bytes, 0))
+                self.assertEqual(vars(self.window._scan_coverage), coverage_before)
+
+    def test_empty_category_recycle_and_batch_buttons_disabled_with_other_targets_checked(self):
+        self._run_scan(self._make_duplicates())
+        self.window.show()
+        for category in ("video", "other"):
+            with self.subTest(category=category):
+                QTest.mouseClick(self.window.category_buttons[category], Qt.MouseButton.LeftButton)
+                self.app.processEvents()
+                self.assertEqual(self.window.active_category, category)
+                for button in (self.window.btn_recycle, self.window.btn_select_all,
+                               self.window.btn_select_none, self.window.btn_invert):
+                    self.assertFalse(button.isEnabled(), "空分类不应让其它类勾选启用操作")
+                with mock.patch.object(g.QMessageBox, "question") as confirm, \
+                        mock.patch.object(g, "DedupeRecycleWorker") as worker:
+                    QTest.mouseClick(self.window.btn_recycle, Qt.MouseButton.LeftButton)
+                confirm.assert_not_called()
+                worker.assert_not_called()
+                self.assertTrue(all(row.checked for row in self._duplicate_rows()))
+        QTest.mouseClick(self.window.btn_filter_photo, Qt.MouseButton.LeftButton)
+        self.assertTrue(self.window.btn_recycle.isEnabled())
+
     def test_keeper_change_record_round_trip_preserves_roles_and_states(self):
         self._typed_scan()
         result = self.window._current_result
@@ -1027,31 +1212,27 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
 
     def test_visible_batch_buttons_only_change_active_category(self):
         self._typed_scan()
-        result = self.window._current_result
-        category_group = {
-            self._category_for_group(group_id): group_id
-            for group_id in range(1, len(result.groups) + 1)
-        }
-        self.assertEqual(set(category_group), {"photo", "video", "other"})
-        self.window.category_buttons["photo"].click()
-        before = [row.checked for row in self.window.table_model.rows]
-        self.window.category_buttons["video"].click()
-        visible_before = [
-            row.checked
-            for index, row in enumerate(self.window.table_model.rows)
-            if not self.window.table.isRowHidden(index) and row.is_checkable()
-        ]
-        self.window.btn_invert.click()
-        self.app.processEvents()
-        visible_after = [
-            row.checked
-            for index, row in enumerate(self.window.table_model.rows)
-            if not self.window.table.isRowHidden(index) and row.is_checkable()
-        ]
-        self.assertEqual(visible_after, [not checked for checked in visible_before])
-        for index, row in enumerate(self.window.table_model.rows):
-            if self.window.table.isRowHidden(index):
-                self.assertEqual(row.checked, before[index], (index, row.primary_path()))
+        self.window.show()
+        for category in ("photo", "video", "other"):
+            with self.subTest(category=category):
+                QTest.mouseClick(self.window.category_buttons[category], Qt.MouseButton.LeftButton)
+                self.app.processEvents()
+                for button, should_check in (
+                    (self.window.btn_select_none, False),
+                    (self.window.btn_select_all, True),
+                    (self.window.btn_invert, False),
+                ):
+                    before = {row.primary_path(): row.checked for row in self.window.table_model.rows}
+                    self.assertTrue(button.isEnabled())
+                    QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+                    self.app.processEvents()
+                    for index, row in enumerate(self.window.table_model.rows):
+                        if not self.window.table.isRowHidden(index) and row.is_checkable():
+                            self.assertEqual(row.checked, should_check)
+                        else:
+                            self.assertEqual(row.checked, before[row.primary_path()])
+                        if row.kind == g.KIND_KEEPER:
+                            self.assertFalse(row.checked, "分类批量动作不得勾选保留项")
 
     def test_embedded_mode_and_english_refresh_all_new_controls(self):
         from unified_gui import EmbeddedPage
@@ -1183,6 +1364,244 @@ class DedupeGroupsKeeperTests(FolderDedupeFixtureMixin, unittest.TestCase):
         self.assertFalse(keeper_row.checked)
         self.assertEqual(classify_duplicate_group(loaded_group), "photo")
         self.assertTrue(self.window._record_imported)
+
+
+class ScanCoveragePageTests(FolderDedupeFixtureMixin, unittest.TestCase):
+    """覆盖统计走真实扫描线程；门禁只控制 Hash 阶段，不伪造扫描结果。"""
+
+    def setUp(self):
+        super().setUp()
+        self.window.lang = "zh"
+        self.window._apply_language()
+        decoder = mock.patch.object(
+            media_thumbnail, "load_thumbnail_image_detail",
+            side_effect=lambda _path, _size, **_kwargs: (
+                QImage(2, 2, QImage.Format.Format_RGB32), ""
+            ),
+        )
+        decoder.start()
+        self.addCleanup(decoder.stop)
+        self.addCleanup(self._stop_inventory_loaders)
+
+    def _stop_inventory_loaders(self):
+        loaders = (self.window.thumbnail_loader, self.window.preview_panel.loader())
+        workers = [worker for loader in loaders for worker in list(loader._workers)]
+        self.window._release_thumbnail_loader()
+        self.assertTrue(_pump(self.app, lambda: not any(t.is_alive() for t in workers), 5))
+
+    def _mixed_inventory(self, name="inventory") -> Path:
+        root = self.tmp / name
+        for folder in ("sub/deep", "empty", ".hidden-dir"):
+            (root / folder).mkdir(parents=True, exist_ok=True)
+        for relative, content in {
+            "sub/a.jpg": b"same-photo-bytes",
+            "sub/deep/b.jpg": b"same-photo-bytes",
+            "only.jpg": b"unique",
+            ".hidden.jpg": b"hidden-photo",
+            "zero.jpg": b"",
+            "zero.txt": b"",
+            "notes.txt": b"outside-media-scope",
+            "sub/extra.bin": b"another-filtered-file",
+        }.items():
+            (root / relative).write_bytes(content)
+        return root
+
+    def _begin_inventory_scan(self, root: Path):
+        self.window.scope_combo.setCurrentIndex(self.window.scope_combo.findData(g.SCOPE_MEDIA))
+        self.window.thread_count_combo.setCurrentIndex(
+            self.window.thread_count_combo.findData(1)
+        )
+        self.window.root_edit.setText(str(root))
+        self.window.btn_scan.click()
+
+    def _assert_inventory(self, **expected):
+        coverage = self.window._scan_coverage
+        self.assertIsNotNone(coverage)
+        for field, value in expected.items():
+            self.assertEqual(getattr(coverage, field), value, field)
+        self.assertEqual(
+            coverage.files,
+            coverage.included_files + coverage.zero_byte_files + coverage.filtered_files,
+        )
+        return coverage
+
+    def test_inventory_visible_before_hash_finishes_and_single_traversal_totals(self):
+        root = self._mixed_inventory()
+        entered, release = threading.Event(), threading.Event()
+        real_hash_many = duplicate_scan_core._hash_many
+        real_scandir = duplicate_scan_core.os.scandir
+        visited = []
+        hash_totals = []
+
+        def gated_hash(*args, **kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise AssertionError("Hash 测试门禁未释放")
+            return real_hash_many(*args, **kwargs)
+
+        def counted_scandir(path):
+            visited.append(Path(path))
+            return real_scandir(path)
+
+        with mock.patch.object(duplicate_scan_core, "_hash_many", side_effect=gated_hash), \
+                mock.patch.object(duplicate_scan_core.os, "scandir", side_effect=counted_scandir), \
+                mock.patch.object(duplicate_scan_core, "sha256_file", wraps=duplicate_scan_core.sha256_file) as hashed:
+            try:
+                self._begin_inventory_scan(root)
+                self.assertTrue(_pump(self.app, entered.is_set), "未到真实 Hash 阶段")
+                self.assertTrue(_pump(
+                    self.app,
+                    lambda: self.window._scan_coverage is not None
+                    and self.window._scan_coverage.hash_candidates == 2,
+                ), "Hash 结束前未收到覆盖统计信号")
+                self.assertTrue(self.window.is_scanning)
+                self.assertIsNone(self.window._current_result)
+                self._assert_inventory(folders=4, files=8, included_files=4,
+                                       zero_byte_files=2, filtered_files=2, hash_candidates=2,
+                                       skipped_links=0, entry_errors=0, directory_errors=0)
+                self.assertIn("4", self.window.scan_inventory_summary.text())
+                self.assertIn("8", self.window.scan_inventory_summary.text())
+                self.assertIn("hash", self.window.scan_inventory_detail.text().casefold())
+                hashed.assert_not_called()
+                self.window._scan_worker.progress_update.connect(
+                    lambda stage, _done, total: hash_totals.append(total) if stage == "hash" else None
+                )
+            finally:
+                release.set()
+                self.assertTrue(_pump(
+                    self.app, lambda: self.window._scan_thread is None and not self.window._is_busy()
+                ), "扫描线程/界面未收尾")
+            self._assert_inventory(enumeration_complete=True)
+            self.assertEqual({Path(call.args[0]) for call in hashed.call_args_list},
+                             {root / "sub/a.jpg", root / "sub/deep/b.jpg"})
+            self.assertEqual(hashed.call_count, 2, "唯一大小文件不应算 Hash")
+        self.assertTrue(hash_totals)
+        self.assertEqual(set(hash_totals), {2})
+        expected_dirs = {root, root / "sub", root / "sub/deep", root / "empty", root / ".hidden-dir"}
+        self.assertEqual(set(visited), expected_dirs)
+        self.assertEqual(len(visited), len(expected_dirs), "覆盖统计不得增加遍历")
+        self.assertEqual(self.window._current_result.hashed_files, 2)
+
+    def test_cancel_and_failure_keep_last_counts_and_mark_incomplete(self):
+        real_hash_many = duplicate_scan_core._hash_many
+        for outcome in ("cancel", "failure"):
+            with self.subTest(outcome=outcome):
+                root = self._mixed_inventory(outcome)
+                entered, release = threading.Event(), threading.Event()
+
+                def gated_hash(*args, **kwargs):
+                    entered.set()
+                    if not release.wait(5):
+                        raise AssertionError("Hash 测试门禁未释放")
+                    if outcome == "failure":
+                        raise RuntimeError("controlled coverage failure")
+                    return real_hash_many(*args, **kwargs)
+
+                with mock.patch.object(duplicate_scan_core, "_hash_many", side_effect=gated_hash):
+                    try:
+                        self._begin_inventory_scan(root)
+                        self.assertTrue(_pump(self.app, entered.is_set))
+                        self.assertTrue(_pump(
+                            self.app, lambda: self.window._scan_coverage is not None
+                            and self.window._scan_coverage.files == 8
+                        ))
+                        if outcome == "cancel":
+                            self.window.btn_stop_scan.click()
+                    finally:
+                        release.set()
+                        self.assertTrue(_pump(
+                            self.app, lambda: self.window._scan_thread is None and not self.window._is_busy()
+                        ))
+                self._assert_inventory(folders=4, files=8, included_files=4)
+                if outcome == "cancel":
+                    self.assertFalse(self.window._scan_coverage.enumeration_complete)
+                text = self.window.scan_inventory_summary.text() + self.window.scan_inventory_detail.text()
+                self.assertRegex(text.casefold(), r"不完整|incomplete")
+                self.assertFalse(self.window.btn_recycle.isEnabled())
+                if outcome == "cancel":
+                    self.assertTrue(self.window._scan_cancelled)
+                else:
+                    self.assertTrue(any("controlled coverage failure" in message
+                                        for level, message in self.notifications if level == "error"))
+
+    def test_no_duplicate_inventory_rescan_and_reset_do_not_reuse_old_totals(self):
+        root = self.tmp / "unique-only"
+        (root / "nested").mkdir(parents=True)
+        (root / "empty").mkdir()
+        for relative, payload in {"a.jpg": b"a", "b.jpg": b"bb",
+                                  "nested/c.jpg": b"ccc", "empty.bin": b""}.items():
+            (root / relative).write_bytes(payload)
+        with mock.patch.object(duplicate_scan_core, "sha256_file", wraps=duplicate_scan_core.sha256_file) as hashed:
+            self._begin_inventory_scan(root)
+            self.assertTrue(_pump(self.app, lambda: self.window._scan_thread is None and not self.window._is_busy()))
+            hashed.assert_not_called()
+        self.assertEqual(self.window._current_result.groups, [])
+        self._assert_inventory(folders=2, files=4, included_files=3, zero_byte_files=1,
+                               filtered_files=0, hash_candidates=0, enumeration_complete=True)
+        self.assertIn("4", self.window.scan_inventory_summary.text())
+        self.assertTrue(self.window.scan_inventory_summary.text())
+        self.window.btn_filter_other.click()
+        self.window.btn_select_all.click()
+        self._assert_inventory(files=4, hash_candidates=0)
+        fresh = self.tmp / "rescan"
+        fresh.mkdir()
+        (fresh / "one.jpg").write_bytes(b"fresh")
+        self._begin_inventory_scan(fresh)
+        self.assertTrue(_pump(self.app, lambda: self.window._scan_thread is None and not self.window._is_busy()))
+        self._assert_inventory(folders=0, files=1, included_files=1, hash_candidates=0)
+        self.window._reset_results()
+        self.assertIsNone(self.window._scan_coverage)
+        self.assertNotIn("histor", self.window.scan_inventory_summary.text().casefold())
+        self.assertNotIn("历史", self.window.scan_inventory_summary.text())
+
+    def test_legacy_v1_inventory_is_unknown_and_language_refresh_does_not_rescan(self):
+        self._begin_inventory_scan(self._mixed_inventory())
+        self.assertTrue(_pump(self.app, lambda: self.window._scan_thread is None and not self.window._is_busy()))
+        self._assert_inventory(files=8, folders=4)
+        before = vars(self.window._scan_coverage).copy()
+        self.window.btn_filter_other.click()
+        self.window.btn_select_none.click()
+        self.window.btn_filter_photo.click()
+        self.window.btn_select_none.click()
+        candidate_index = next(
+            index for index, row in enumerate(self.window.table_model.rows)
+            if row.kind == g.KIND_DUPLICATE
+        )
+        self.window.table.selectRow(candidate_index)
+        self.assertTrue(self.window.btn_set_keeper.isEnabled())
+        self.window.btn_set_keeper.click()
+        self.assertEqual(vars(self.window._scan_coverage), before,
+                         "分类/勾选/重选 keeper 不得改变扫描覆盖统计")
+        destination = self.tmp / "coverage-export-v1.json"
+        with mock.patch.object(g.QFileDialog, "getSaveFileName", return_value=(str(destination), "JSON")):
+            self.window.btn_export_record.click()
+            self.assertTrue(_pump(self.app, lambda: self.window._record_thread is None and not self.window._is_busy()))
+        payload = json.loads(destination.read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertNotIn("coverage", payload["result"], "不能悄悄升级严格 v1 记录")
+        with mock.patch.object(g, "find_internal_duplicates", side_effect=AssertionError("历史导入不能重扫")) as scan:
+            self.assertTrue(self._import(destination))
+            self.assertIsNone(self.window._scan_coverage)
+            self.window.lang = "zh"
+            self.window._apply_language()
+            chinese = self.window.scan_inventory_summary.text()
+            self.assertIn("历史", chinese)
+            self.assertNotIn("0", chinese, "历史未知目录总量不能冒充零")
+            self.assertIn("4", self.window.scan_inventory_detail.text())
+            self.assertIn("2", self.window.scan_inventory_detail.text())
+            chinese_tip = self.window.scan_inventory_summary.toolTip()
+            self.window.lang = "en"
+            self.window._apply_language()
+            english = self.window.scan_inventory_summary.text()
+            self.assertRegex(english.casefold(), r"histor|record")
+            self.assertRegex(english.casefold(), r"not|unknown|unavailable")
+            self.assertNotEqual(chinese, english)
+            self.assertNotEqual(chinese_tip, self.window.scan_inventory_summary.toolTip())
+            self.assertNotIn("scan_inventory_", english)
+            self.window._reset_results()
+            self.assertIsNone(self.window._scan_coverage)
+            self.assertNotRegex(self.window.scan_inventory_summary.text().casefold(), r"histor|record")
+            scan.assert_not_called()
 
 
 class RecycleWorkerVerifyTests(unittest.TestCase):

@@ -15,15 +15,17 @@ import sys
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
 import file_context_menu as fcm
+from dedupe_table_scroll import configure_result_table_scrolling
 from duplicate_scan_core import (
     FileEntry,
     RecycleOutcome,
     ScanCancelled,
+    ScanCoverage,
     ScanResult,
     find_internal_duplicates,
     classify_media_type,
@@ -64,6 +66,7 @@ from PyQt6.QtWidgets import (
     QHeaderView,
     QMenu,
     QMessageBox,
+    QSizePolicy,
     QSplitter,
     QTableView,
     QVBoxLayout,
@@ -158,43 +161,61 @@ TRANSLATIONS = {
         "byte_verify": "执行前再次逐字节复核",
         "btn_scan": "开始扫描",
         "btn_stop_scan": "停止扫描",
-        "btn_recycle": "移入回收站",
+        "btn_recycle": "回收{category}勾选项",
         "btn_pause": "暂停",
         "btn_resume": "继续",
         "btn_stop_recycle": "停止回收",
         "table_check": "☐",
         "table_group": "组号",
         "table_thumb": "预览",
-        "table_role": "角色",
+        "table_role": "保留选择",
         "table_path": "路径",
         "table_size": "大小",
         "table_mtime": "修改时间",
         "table_hash": "SHA-256",
         "table_status": "状态",
-        "role_keep": "保留",
-        "role_duplicate": "重复",
+        "role_keep": "● 保留此份",
+        "role_duplicate": "○ 设为保留此份",
+        "role_processed_duplicate": "重复副本",
+        "role_set_keeper_tooltip": "单击即可保留此文件；回收勾选框在最左侧另一列。",
+        "menu_set_keeper": "设为本组保留项",
+        "category_name_photo": "照片",
+        "category_name_video": "视频",
+        "category_name_other": "其他",
         "preview_selected": "选中文件",
         "preview_keeper": "本组保留文件",
         "preview_issue": "问题文件",
-        "tabs_hint": "勾选要回收的重复文件；保留行不可勾选。双击行打开文件，右键查看更多操作。",
+        "tabs_hint": "软件先默认保留一份，点击副本的「○ 设为保留此份」即可更换。左侧勾选框选择回收项；全选、反选和回收只作用当前分类。",
         "waiting": "等待选择目录",
         "scanning": "正在扫描",
         "status_scanning_stage": "{stage} {done}/{total}",
         "stage_enumerate": "枚举文件",
-        "stage_hash": "计算哈希",
+        "stage_hash": "计算 Hash 候选",
+        "coverage_summary": "本次扫描已发现：子文件夹 {folders} 个，普通文件 {files} 个（根目录本身不计）",
+        "coverage_detail": "纳入 {included} · Hash 候选 {candidates} · 大小唯一免 Hash {size_only} · 空文件 {zero} · 范围过滤 {filtered} · 链接跳过 {links} · 其他条目 {other} · 条目错误 {entry_errors} · 目录错误 {directory_errors}",
+        "coverage_hash_pending": "尚未确定",
+        "coverage_scanning": "扫描进行中",
+        "coverage_incomplete": "统计不完整",
+        "coverage_complete": "目录枚举完成",
+        "coverage_history": "历史记录未保存目录总数",
+        "coverage_history_detail": "仅记录了纳入 {included} 个文件、Hash 成功 {hashed} 个；文件夹与全部文件数量未知。",
+        "coverage_unavailable": "尚无扫描覆盖统计",
+        "coverage_tooltip": "统计本次扫描根目录已发现的子文件夹和普通文件；根目录自身不计，链接目录不跟随。无法读取的目录后代数量未知。计数来自单次扫描枚举，不新增文件读取。",
+        "coverage_root": "扫描根目录：{root}",
+        "hash_progress_tooltip": "Hash 进度分母是大小分组产生的候选文件数；未计算 Hash 不代表文件重复。",
         "stage_verify": "逐字节复核",
         "stage_recycle": "回收",
-        "scan_done": "扫描完成：{groups} 组重复，可回收 {count} 个文件，共 {total} 个文件",
+        "scan_done": "扫描完成：{groups} 组重复，可回收 {count} 个文件",
         "scan_none": "未找到目录内的完全重复文件",
         "scan_cancelled": "扫描已取消，结果不可执行回收，请重新扫描",
         "scan_failed": "扫描失败：{error}",
-        "summary_ready": "可回收 {count} 个 / 共 {total}",
+        "summary_ready": "可回收 {count} 个 / 结果 {total} 行",
         "summary_detail": "校验不一致 {mismatch}；读取问题 {issue}",
         "summary_done": "已回收 {success} / 跳过 {skipped} / 失败 {failed} / "
         "校验不一致 {mismatch} / 读取问题 {issue}",
         "summary_empty": "",
         "summary_stale": "保留策略已变更：需要重新扫描",
-        "space_summary": "预计可腾出：{total}（当前勾选：{selected}）",
+        "space_summary": "预计可腾出：{total}（当前{category}已选：{selected}）",
         "space_summary_tooltip": "按待处理副本的文件逻辑大小估算；移入回收站后，清空回收站时才会释放空间。",
         "status_pending": "待处理",
         "status_keep": "保留",
@@ -216,8 +237,7 @@ TRANSLATIONS = {
         "skip_read_error": "读取失败",
         "fail_send2trash_unavailable": "缺少 send2trash",
         "confirm_title": "确认移入回收站",
-        "confirm_content": "将把 {count} 个重复文件（共 {size}）移入回收站，每组至少保留 1 个文件，"
-        "不会永久删除。\n执行前会逐个重新校验，任一校验不通过则跳过。确定继续？",
+        "confirm_content": "将把当前{category}分类中已勾选的 {count} 个重复文件（共 {size}）移入回收站，每组至少保留 1 个文件，不会永久删除。\n执行前会逐个重新校验，任一校验不通过则跳过。确定继续？",
         "missing_trash_title": "缺少回收站支持",
         "missing_trash_content": "当前环境缺少 send2trash，无法移入回收站。请先安装 send2trash。",
         "cannot_start_title": "无法开始",
@@ -286,45 +306,61 @@ TRANSLATIONS = {
         "byte_verify": "Byte-verify again before recycle",
         "btn_scan": "Start scan",
         "btn_stop_scan": "Stop scan",
-        "btn_recycle": "Move to recycle bin",
+        "btn_recycle": "Recycle checked {category}",
         "btn_pause": "Pause",
         "btn_resume": "Resume",
         "btn_stop_recycle": "Stop recycle",
         "table_check": "☐",
         "table_group": "Group",
         "table_thumb": "Preview",
-        "table_role": "Role",
+        "table_role": "Keep one copy",
         "table_path": "Path",
         "table_size": "Size",
         "table_mtime": "Modified",
         "table_hash": "SHA-256",
         "table_status": "Status",
-        "role_keep": "Keep",
-        "role_duplicate": "Duplicate",
+        "role_keep": "● Keeper",
+        "role_duplicate": "○ Keep this file",
+        "role_processed_duplicate": "Duplicate",
+        "role_set_keeper_tooltip": "Click to keep this file; the recycle checkbox is in the separate leftmost column.",
+        "menu_set_keeper": "Keep this file in its group",
+        "category_name_photo": "photos",
+        "category_name_video": "videos",
+        "category_name_other": "other files",
         "preview_selected": "Selected file",
         "preview_keeper": "Group keeper",
         "preview_issue": "Problem file",
-        "tabs_hint": "Check the duplicate files to recycle; keeper rows cannot be checked. "
-        "Double-click to open; right-click for more.",
+        "tabs_hint": "A keeper is chosen automatically. Click a copy's '○ Keep this file' to change it. Left checkboxes select copies to recycle. Select, invert and recycle apply to the current category.",
         "waiting": "Waiting for a folder",
         "scanning": "Scanning",
         "status_scanning_stage": "{stage} {done}/{total}",
         "stage_enumerate": "Enumerating",
-        "stage_hash": "Hashing",
+        "stage_hash": "Hashing candidates",
+        "coverage_summary": "Discovered in this scan: {folders} subfolders, {files} regular files (root excluded)",
+        "coverage_detail": "Included {included} · Hash candidates {candidates} · Unique-size (no Hash) {size_only} · Empty {zero} · Scope-filtered {filtered} · Links skipped {links} · Other entries {other} · Entry errors {entry_errors} · Directory errors {directory_errors}",
+        "coverage_hash_pending": "Not determined",
+        "coverage_scanning": "Scanning",
+        "coverage_incomplete": "Coverage incomplete",
+        "coverage_complete": "Directory enumeration complete",
+        "coverage_history": "Historical record did not save directory totals",
+        "coverage_history_detail": "Recorded {included} included files and {hashed} successfully hashed files; folder and total file counts are unknown.",
+        "coverage_unavailable": "No scan coverage available",
+        "coverage_tooltip": "Counts discovered subfolders and regular files under the scan root; the root itself is excluded and links are not followed. Descendant counts of unreadable directories are unknown. Counts use the existing scan enumeration without additional file reads.",
+        "coverage_root": "Scan root: {root}",
+        "hash_progress_tooltip": "Hash progress is over file candidates produced by size grouping; files not hashed are not thereby duplicates.",
         "stage_verify": "Byte verifying",
         "stage_recycle": "Recycling",
-        "scan_done": "Scan complete: {groups} duplicate group(s), {count} recyclable of "
-        "{total} file(s)",
+        "scan_done": "Scan complete: {groups} duplicate group(s), {count} recyclable file(s)",
         "scan_none": "No byte-identical duplicates found in this folder",
         "scan_cancelled": "Scan cancelled; results cannot be recycled. Please rescan.",
         "scan_failed": "Scan failed: {error}",
-        "summary_ready": "Recyclable {count} / total {total}",
+        "summary_ready": "Recyclable {count} / {total} result rows",
         "summary_detail": "Mismatch {mismatch}; read issues {issue}",
         "summary_done": "Recycled {success} / skipped {skipped} / failed {failed} / "
         "mismatch {mismatch} / read issues {issue}",
         "summary_empty": "",
         "summary_stale": "Keep strategy changed: rescan required",
-        "space_summary": "Estimated reclaimable: {total} (selected: {selected})",
+        "space_summary": "Estimated reclaimable: {total} (selected {category}: {selected})",
         "space_summary_tooltip": "Estimated from pending duplicates' logical file sizes; space is released only after emptying the recycle bin.",
         "status_pending": "Pending",
         "status_keep": "Keep",
@@ -347,9 +383,7 @@ TRANSLATIONS = {
         "skip_read_error": "read error",
         "fail_send2trash_unavailable": "send2trash unavailable",
         "confirm_title": "Confirm recycle",
-        "confirm_content": "Move {count} duplicate file(s) ({size}) to the recycle bin; each group "
-        "keeps at least one file and nothing is permanently deleted.\nEvery file is revalidated "
-        "right before recycling; any check failure skips it. Continue?",
+        "confirm_content": "Move the {category} category's {count} checked duplicate file(s) ({size}) to the recycle bin; each group keeps at least one file and nothing is permanently deleted.\nEvery file is revalidated right before recycling; any check failure skips it. Continue?",
         "missing_trash_title": "Recycle bin unavailable",
         "missing_trash_content": "send2trash is not available. Install send2trash first.",
         "cannot_start_title": "Cannot start",
@@ -501,6 +535,7 @@ class DedupeTableModel(QAbstractTableModel):
         self.mismatch_fg = QBrush(QColor("#B54708"))
         self.issue_fg = QBrush(QColor("#B42318"))
         self.done_fg = QBrush(QColor("#667085"))
+        self.keeper_action_fg = QBrush(QColor("#2563EB"))
 
     # ---- Qt 模型接口 ----
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -542,6 +577,10 @@ class DedupeTableModel(QAbstractTableModel):
                 font = QFont()
                 font.setBold(True)
                 return font
+            if row.kind == KIND_DUPLICATE and row.status == "status_pending":
+                font = QFont()
+                font.setUnderline(True)
+                return font
             return None
         if role == Qt.ItemDataRole.BackgroundRole:
             if row.kind == KIND_MISMATCH:
@@ -558,6 +597,8 @@ class DedupeTableModel(QAbstractTableModel):
                 return self.issue_fg
             if row.status.startswith(("status_recycled", "status_skipped")):
                 return self.done_fg
+            if column == COL_ROLE and row.kind == KIND_DUPLICATE and row.status == "status_pending":
+                return self.keeper_action_fg
             return None
         return None
 
@@ -609,7 +650,8 @@ class DedupeTableModel(QAbstractTableModel):
             if row.kind == KIND_KEEPER:
                 return self.owner.tr("role_keep")
             if row.kind == KIND_DUPLICATE:
-                return self.owner.tr("role_duplicate")
+                return self.owner.tr("role_duplicate" if row.status == "status_pending"
+                                     else "role_processed_duplicate")
             return ""
         if column == COL_PATH:
             if row.kind == KIND_ISSUE:
@@ -634,6 +676,9 @@ class DedupeTableModel(QAbstractTableModel):
             return row.sha256 or None
         if column == COL_STATUS:
             return self.owner._display_status(row.status)
+        if column == COL_ROLE and row.kind == KIND_DUPLICATE:
+            return self.owner.tr("role_set_keeper_tooltip" if row.status == "status_pending"
+                                 else "keeper_reselect_invalid")
         if column == COL_ROLE and row.keeper_path() is not None:
             return str(row.keeper_path())
         return None
@@ -699,6 +744,12 @@ class DedupeContextMenu(FileContextMenu):
         global_pos = self.table.viewport().mapToGlobal(pos)
         menu = QMenu(self.owner)
         keeper_paths = [path for path in self.keeper_provider(row) if path is not None]
+        act_set_keeper = menu.addAction(self._label("menu_set_keeper"))
+        act_set_keeper.setEnabled(self.owner._can_reselect_keeper(row))
+        act_set_keeper.triggered.connect(
+            lambda _checked=False, index=row: self.owner._set_row_as_keeper(index)
+        )
+        menu.addSeparator()
 
         if len(paths) == 1:
             first_path = paths[0]
@@ -747,6 +798,7 @@ class DedupeScanWorker(QObject):
     """目录内去重扫描 worker：只调用核心模块，绝不碰 UI。"""
 
     progress_update = pyqtSignal(str, int, int)
+    coverage_update = pyqtSignal(object)
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)
 
@@ -767,6 +819,10 @@ class DedupeScanWorker(QObject):
     def _on_progress(self, stage: str, done: int, total: int):
         self.progress_update.emit(str(stage), int(done), int(total))
 
+    def _on_coverage(self, coverage: ScanCoverage):
+        # 核心按有界频率发送独立快照；worker 只转发信号，不操作 UI。
+        self.coverage_update.emit(coverage)
+
     def run(self):
         try:
             result = find_internal_duplicates(
@@ -776,6 +832,7 @@ class DedupeScanWorker(QObject):
                 threads=self._threads,
                 should_cancel=self._should_cancel,
                 on_progress=self._on_progress,
+                on_coverage=self._on_coverage,
             )
         except Exception as exc:  # 环境/权限类意外：不让异常穿透 Qt 事件循环
             self.failed.emit(f"{type(exc).__name__}: {exc}")
@@ -955,6 +1012,8 @@ class MainWindow(FramelessMainWindow):
         self._scan_snapshot: dict | None = None
         self._current_result: ScanResult | None = None
         self._record_imported = False
+        self._scan_coverage: ScanCoverage | None = None
+        self._scan_coverage_phase = "idle"  # idle/scanning/history/complete/incomplete
 
         # 每个源行固定归属一个类别；筛选仅隐藏行，绝不重排/重建 worker 的源索引
         self.active_category = "photo"
@@ -1089,6 +1148,31 @@ class MainWindow(FramelessMainWindow):
         table_layout.setSpacing(8)
         self.tabs_hint = BodyLabel(self.tr("tabs_hint"), self)
         self.tabs_hint.setStyleSheet("color: #6b7280; padding: 4px 6px;")
+        self.tabs_hint.setWordWrap(True)
+        hint_policy = self.tabs_hint.sizePolicy()
+        hint_policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        self.tabs_hint.setSizePolicy(hint_policy)
+
+        # 常驻扫描覆盖卡片：主计数突出显示，明细可换行；root 始终不计。
+        self.scan_inventory_card = CardWidget(self)
+        coverage_layout = QVBoxLayout(self.scan_inventory_card)
+        coverage_layout.setContentsMargins(14, 10, 14, 10)
+        coverage_layout.setSpacing(4)
+        self.scan_inventory_summary = BodyLabel(self.tr("coverage_unavailable"), self)
+        self.scan_inventory_summary.setStyleSheet("font-size: 16px; font-weight: 600; color: #344054;")
+        self.scan_inventory_summary.setWordWrap(True)
+        self.scan_inventory_detail = BodyLabel("", self)
+        self.scan_inventory_detail.setStyleSheet("color: #667085;")
+        self.scan_inventory_detail.setWordWrap(True)
+        for label in (self.scan_inventory_summary, self.scan_inventory_detail):
+            policy = label.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+            label.setSizePolicy(policy)
+            label.setMinimumWidth(0)
+        self.scan_inventory_card.setToolTip(self.tr("coverage_tooltip"))
+        coverage_layout.addWidget(self.scan_inventory_summary)
+        coverage_layout.addWidget(self.scan_inventory_detail)
+
         self.category_bar = QHBoxLayout()
         self.category_bar.setSpacing(8)
         self.category_buttons = {}
@@ -1132,7 +1216,8 @@ class MainWindow(FramelessMainWindow):
         self.table.setColumnWidth(COL_CHECK, 34)
         self.table.setColumnWidth(COL_GROUP, 64)
         self.table.setColumnWidth(COL_THUMB, THUMBNAIL_SIZE + 12)
-        self.table.setColumnWidth(COL_ROLE, 76)
+        self.table.setColumnWidth(COL_ROLE, 150)
+        configure_result_table_scrolling(self.table)
 
         self.table_context_menu = DedupeContextMenu(
             self.table,
@@ -1145,6 +1230,7 @@ class MainWindow(FramelessMainWindow):
         # 与 file_context_menu.install_file_context_menu 保持同一约定
         setattr(self.table, "_file_context_menu_helper", self.table_context_menu)
         self.table.doubleClicked.connect(self._on_table_double_clicked)
+        self.table.clicked.connect(self._on_table_clicked)
         self.table.selectionModel().currentChanged.connect(self._on_current_row_changed)
         table_layout.addWidget(self.tabs_hint)
         table_layout.addLayout(self.category_bar)
@@ -1178,7 +1264,9 @@ class MainWindow(FramelessMainWindow):
         self.btn_stop_scan.setIcon(_pick_icon("CANCEL", "CLOSE"))
         self.btn_stop_scan.setEnabled(False)
         self.btn_stop_scan.clicked.connect(lambda _checked=False: self.stop_scan())
-        self.btn_recycle = PrimaryPushButton(self.tr("btn_recycle"), self)
+        self.btn_recycle = PrimaryPushButton(
+            self.tr("btn_recycle", category=self._category_name()), self
+        )
         self.btn_recycle.setIcon(_pick_icon("DELETE", "REMOVE"))
         self.btn_recycle.setEnabled(False)
         self.btn_recycle.clicked.connect(lambda _checked=False: self.start_recycling())
@@ -1259,6 +1347,7 @@ class MainWindow(FramelessMainWindow):
 
         outer.addWidget(header_card)
         outer.addWidget(path_card)
+        outer.addWidget(self.scan_inventory_card)
         outer.addWidget(self.splitter, 1)
         outer.addWidget(action_card)
         outer.addWidget(foot_card)
@@ -1492,7 +1581,7 @@ class MainWindow(FramelessMainWindow):
         self.tabs_hint.setText(self.tr("tabs_hint"))
         self.btn_scan.setText(self.tr("btn_scan"))
         self.btn_stop_scan.setText(self.tr("btn_stop_scan"))
-        self.btn_recycle.setText(self.tr("btn_recycle"))
+        self.btn_recycle.setText(self.tr("btn_recycle", category=self._category_name()))
         self.btn_pause.setText(
             self.tr("btn_resume") if self._recycle_paused else self.tr("btn_pause")
         )
@@ -1504,6 +1593,8 @@ class MainWindow(FramelessMainWindow):
         self.btn_import_record.setText(self.tr("btn_import_record"))
         self.btn_set_keeper.setText(self.tr("btn_set_keeper"))
         self._update_category_button_labels()
+        self.scan_inventory_card.setToolTip(self.tr("coverage_tooltip"))
+        self._refresh_scan_inventory()
         self.space_summary.setToolTip(self.tr("space_summary_tooltip"))
         self.table_model.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, COLUMN_COUNT - 1)
         self._set_status_text(self._last_status_key, **self._last_status_kwargs)
@@ -1609,7 +1700,11 @@ class MainWindow(FramelessMainWindow):
             else:
                 self.table.setCurrentIndex(self.table_model.index(candidate, COL_PATH))
         self._refresh_preview()
+        self._refresh_summary()
         self._update_action_states()
+
+    def _category_name(self) -> str:
+        return self.tr(f"category_name_{self.active_category}")
 
     def _row_is_visible(self, row_index: int) -> bool:
         return (
@@ -1709,6 +1804,18 @@ class MainWindow(FramelessMainWindow):
     # ------------------------------------------------------------------
     # 右键 / 双击
     # ------------------------------------------------------------------
+    def _on_table_clicked(self, index: QModelIndex):
+        if index.isValid() and index.column() == COL_ROLE:
+            row = self.table_model.rows[index.row()]
+            if row.kind == KIND_DUPLICATE:
+                self._set_row_as_keeper(index.row())
+
+    def _set_row_as_keeper(self, row_index: int) -> bool:
+        if not (0 <= row_index < len(self.table_model.rows)):
+            return False
+        self.table.setCurrentIndex(self.table_model.index(row_index, COL_ROLE))
+        return self.set_selected_as_keeper()
+
     def _refresh_keeper_action(self) -> None:
         button = getattr(self, "btn_set_keeper", None)
         if button is None:
@@ -1852,7 +1959,7 @@ class MainWindow(FramelessMainWindow):
         return []
 
     def _on_table_double_clicked(self, index: QModelIndex):
-        if not index.isValid():
+        if not index.isValid() or index.column() in (COL_CHECK, COL_ROLE):
             return
         rows = self.table_model.rows
         row_index = index.row()
@@ -1878,10 +1985,13 @@ class MainWindow(FramelessMainWindow):
         )
 
     def _recyclable_rows(self) -> list[DedupeRow]:
+        return [row for _index, row in self._checked_recycle_rows()]
+
+    def _checked_recycle_rows(self) -> list[tuple[int, DedupeRow]]:
+        """当前分类已勾选目标；按钮、确认框与worker共用同一来源。"""
         return [
-            row
-            for row in self.table_model.rows
-            if row.checked and row.kind == KIND_DUPLICATE and row.status == "status_pending"
+            (index, row) for index, row in self._visible_checkable_rows()
+            if row.checked and row.entry is not None and row.keeper is not None
         ]
 
     def _update_action_states(self):
@@ -1898,7 +2008,8 @@ class MainWindow(FramelessMainWindow):
             and bool(self._recyclable_rows())
         )
         self.btn_recycle.setEnabled(can_recycle)
-        has_rows = bool(self.table_model.rows)
+        self.btn_recycle.setText(self.tr("btn_recycle", category=self._category_name()))
+        has_rows = bool(self._visible_checkable_rows())
         batch_enabled = (
             (not busy) and has_rows and not self._scan_stale and not self._scan_cancelled
         )
@@ -1923,7 +2034,7 @@ class MainWindow(FramelessMainWindow):
         self._refresh_summary()
 
     def _reclaimable_sizes(self) -> tuple[int, int]:
-        """返回所有 source rows 中待处理副本的总容量和勾选容量；不访问文件系统。"""
+        """返回全局待处理容量及当前分类勾选容量；不访问文件系统。"""
         if (
             not self._has_scan
             or self._current_result is None
@@ -1933,12 +2044,12 @@ class MainWindow(FramelessMainWindow):
             return 0, 0
         total_bytes = 0
         selected_bytes = 0
-        for row in self.table_model.rows:
+        for index, row in enumerate(self.table_model.rows):
             if not row.is_checkable() or row.entry is None or row.keeper is None:
                 continue
             size = max(0, int(row.entry.size))
             total_bytes += size
-            if row.checked:
+            if row.checked and self._row_is_visible(index):
                 selected_bytes += size
         return total_bytes, selected_bytes
 
@@ -1949,12 +2060,13 @@ class MainWindow(FramelessMainWindow):
                 "space_summary",
                 total=_format_size(total_bytes),
                 selected=_format_size(selected_bytes),
+                category=self._category_name(),
             )
         )
         self.space_summary.setToolTip(self.tr("space_summary_tooltip"))
 
     def _refresh_summary(self):
-        # 在任何 summary 早返回前同步刷新；容量以完整源模型为准，不受分类隐藏影响。
+        # 全局总容量保持完整源模型口径，勾选容量跟随当前分类的回收范围。
         self._refresh_space_summary()
         if not self._has_scan:
             self.summary.setText(self.tr("summary_empty"))
@@ -2203,6 +2315,9 @@ class MainWindow(FramelessMainWindow):
             "created_at": record.created_at,
         }
         self._record_imported = True
+        self._scan_coverage = None
+        self._scan_coverage_phase = "history"
+        self._refresh_scan_inventory()
         self._scan_cancelled = bool(result.cancelled)
         self._scan_stale = bool(record.stale)
         self._has_scan = True
@@ -2228,9 +2343,9 @@ class MainWindow(FramelessMainWindow):
             self._rebuild_path_index()
         finally:
             self.table.setUpdatesEnabled(True)
+        self._update_category_metadata(rows, result, choose_default=True)
         self._refresh_preview()
         self._refresh_summary()
-        self._update_category_metadata(rows, result, choose_default=True)
         self.progress.setValue(0)
         if self._scan_cancelled:
             self._set_status_text("record_import_cancelled")
@@ -2241,7 +2356,6 @@ class MainWindow(FramelessMainWindow):
                 "scan_done",
                 groups=self._group_count,
                 count=sum(1 for row in rows if row.kind == KIND_DUPLICATE),
-                total=len(rows),
             )
         self._update_action_states()
 
@@ -2289,6 +2403,8 @@ class MainWindow(FramelessMainWindow):
 
         self._reset_results()
         self.is_scanning = True
+        self._scan_coverage = ScanCoverage()
+        self._scan_coverage_phase = "scanning"
         self._scan_cancelled = False
         self._scan_stale = False
         self._has_scan = False
@@ -2301,6 +2417,7 @@ class MainWindow(FramelessMainWindow):
             "keep_strategy": self._keep_strategy(),
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
+        self._refresh_scan_inventory()
         self.progress.setValue(0)
         self._set_status_text("scanning")
         self._update_action_states()
@@ -2312,6 +2429,7 @@ class MainWindow(FramelessMainWindow):
         self._scan_worker.moveToThread(self._scan_thread)
         self._scan_thread.started.connect(self._scan_worker.run)
         self._scan_worker.progress_update.connect(self._update_scan_progress)
+        self._scan_worker.coverage_update.connect(self._update_scan_coverage)
         self._scan_worker.finished.connect(self._scan_finished)
         self._scan_worker.failed.connect(self._scan_failed)
         self._scan_worker.finished.connect(self._scan_thread.quit)
@@ -2326,6 +2444,54 @@ class MainWindow(FramelessMainWindow):
             self._scan_worker.request_stop()
             self._set_status_text("status_stopping")
             self.btn_stop_scan.setEnabled(False)
+
+    def _update_scan_coverage(self, coverage: object):
+        if not self.is_scanning or not isinstance(coverage, ScanCoverage):
+            return
+        self._scan_coverage = coverage
+        self._refresh_scan_inventory()
+
+    def _refresh_scan_inventory(self):
+        """只格式化后台快照；分类、勾选和保留项不改变目录口径。"""
+        tooltip = self.tr("coverage_tooltip") + "\n" + self.tr("hash_progress_tooltip")
+        if self._scan_snapshot is not None:
+            tooltip += "\n" + self.tr("coverage_root", root=self._scan_snapshot["root_a"])
+        for widget in (self.scan_inventory_card, self.scan_inventory_summary,
+                       self.scan_inventory_detail):
+            widget.setToolTip(tooltip)
+        self.progress.setToolTip(self.tr("hash_progress_tooltip"))
+        coverage = self._scan_coverage
+        if self._scan_coverage_phase == "history":
+            self.scan_inventory_summary.setText(self.tr("coverage_history"))
+            result = self._current_result
+            self.scan_inventory_detail.setText(self.tr(
+                "coverage_history_detail", included=f"{result.scanned_files:,}",
+                hashed=f"{result.hashed_files:,}",
+            ))
+            return
+        if coverage is None:
+            self.scan_inventory_summary.setText(self.tr("coverage_unavailable"))
+            self.scan_inventory_detail.setText("")
+            return
+        state_key = {
+            "scanning": "coverage_scanning",
+            "complete": "coverage_complete",
+            "incomplete": "coverage_incomplete",
+        }.get(self._scan_coverage_phase, "coverage_scanning")
+        summary = self.tr(
+            "coverage_summary", folders=f"{coverage.folders:,}", files=f"{coverage.files:,}"
+        )
+        self.scan_inventory_summary.setText(f"{self.tr(state_key)} · {summary}")
+        candidates = coverage.hash_candidates
+        pending = self.tr("coverage_hash_pending")
+        self.scan_inventory_detail.setText(self.tr(
+            "coverage_detail", included=f"{coverage.included_files:,}",
+            candidates=pending if candidates is None else f"{candidates:,}",
+            size_only=pending if candidates is None else f"{max(0, coverage.included_files - candidates):,}",
+            zero=f"{coverage.zero_byte_files:,}", filtered=f"{coverage.filtered_files:,}",
+            links=f"{coverage.skipped_links:,}", other=f"{coverage.other_entries:,}",
+            entry_errors=f"{coverage.entry_errors:,}", directory_errors=f"{coverage.directory_errors:,}",
+        ))
 
     def _update_scan_progress(self, stage: str, done: int, total: int):
         percent = int(done * 100 / total) if total else 0
@@ -2342,6 +2508,10 @@ class MainWindow(FramelessMainWindow):
     def _scan_failed(self, error: str):
         self.is_scanning = False
         self._has_scan = False
+        if self._scan_coverage is not None:
+            self._scan_coverage = replace(self._scan_coverage, enumeration_complete=False)
+        self._scan_coverage_phase = "incomplete"
+        self._refresh_scan_inventory()
         self.progress.setValue(0)
         self._notify(self.tr("invalid_root_title"), self.tr("scan_failed", error=error),
                      is_error=True)
@@ -2355,6 +2525,11 @@ class MainWindow(FramelessMainWindow):
         # 新扫描会重置导入标记（记录已不再对应当前结果）
         self._record_imported = False
         self._current_result = result
+        self._scan_coverage = result.coverage
+        self._scan_coverage_phase = (
+            "complete" if result.coverage is not None
+            and result.coverage.enumeration_complete and not result.cancelled else "incomplete"
+        )
         if self._scan_snapshot is None:
             self._scan_snapshot = {
                 "root_a": os.path.abspath(self.root_edit.text().strip() or os.getcwd()),
@@ -2363,6 +2538,7 @@ class MainWindow(FramelessMainWindow):
                 "keep_strategy": self._keep_strategy(),
                 "created_at": datetime.now().isoformat(timespec="seconds"),
             }
+        self._refresh_scan_inventory()
         self._scan_cancelled = bool(result.cancelled)
         self._scan_stale = False
         self._group_count = len(result.groups)
@@ -2395,7 +2571,6 @@ class MainWindow(FramelessMainWindow):
                     "scan_done",
                     groups=self._group_count,
                     count=duplicate_count,
-                    total=len(rows),
                 )
             else:
                 self._set_status_text("scan_none")
@@ -2473,7 +2648,10 @@ class MainWindow(FramelessMainWindow):
         self._has_scan = False
         self._scan_stale = False
         self._current_result = None
+        self._scan_coverage = None
+        self._scan_coverage_phase = "idle"
         self._scan_snapshot = None
+        self._refresh_scan_inventory()
         self._refresh_space_summary()
         self._process_update_queue.clear()
         self._pending_recycle_result = None
@@ -2506,15 +2684,11 @@ class MainWindow(FramelessMainWindow):
                          is_error=True)
             return
 
-        items: list[tuple[int, FileEntry, FileEntry]] = []
-        total_size = 0
-        for row_index, row in enumerate(self.table_model.rows):
-            if not row.checked or row.kind != KIND_DUPLICATE or row.status != "status_pending":
-                continue
-            if row.entry is None or row.keeper is None:
-                continue
-            items.append((row_index, row.entry, row.keeper))
-            total_size += row.entry.size
+        items = [
+            (row_index, row.entry, row.keeper)
+            for row_index, row in self._checked_recycle_rows()
+        ]
+        total_size = sum(target.size for _index, target, _keeper in items)
         if not items:
             self._notify(self.tr("cannot_start_title"), self.tr("cannot_start_content"),
                          is_error=True)
@@ -2523,7 +2697,10 @@ class MainWindow(FramelessMainWindow):
         answer = QMessageBox.question(
             self,
             self.tr("confirm_title"),
-            self.tr("confirm_content", count=len(items), size=_format_size(total_size)),
+            self.tr(
+                "confirm_content", count=len(items), size=_format_size(total_size),
+                category=self._category_name(),
+            ),
         )
         if answer != QMessageBox.StandardButton.Yes:
             return

@@ -92,8 +92,9 @@ self.table.viewport().installEventFilter(self)
 
 - `folder_dedupe_gui.py` 的照片/视频/其他筛选以 `classify_duplicate_group` 为整组分配类别（photo > video > other）；mismatch/issue 按自身路径分类。按钮计数分别表示重复组数和文件行数（保留行+副本，另含该类别的问题行），不能混成同一含义。
 - `_row_categories` 与 source rows 等长；筛选仅 `setRowHidden`，不重排/重建 rows。切换保留项也复用原路径行，worker 始终以原 source row_index 回写。
-- 全选/全不选/反选只处理当前可见类别的合法 pending targets，隐藏类别的 checked 保留。实际回收仍遍历所有类别已勾选的合法副本，确认框必须展示全类别数量/总字节数，不能只报当前 tab。
+- 全选/全不选/反选和回收只处理当前可见类别的合法 pending targets，隐藏类别的 checked/status 保留。回收按钮、确认框数量/容量与 worker 共用 `_checked_recycle_rows()`；当前分类没有目标时禁用，不能把隐藏分类带入回收。
 - “设为保留”先检查 busy/stale/cancelled、组归属、未处理状态和候选快照，再调用核心纯内存重选接口；同步 `ScanResult.groups`、同组每行角色/keeper 引用、状态与勾选。新 keeper 未勾选、旧 keeper 成 pending 并默认勾选、其余副本合法状态保留；已处理组禁止经切换恢复资格。
+- 软件默认保留项可通过角色列“设为保留此份”、右键或底部按钮切换；角色列与左侧回收勾选独立，角色列双击不能打开文件。使用真实鼠标点击覆盖切到其它副本及切回默认项。
 - 预览按**每个具体路径/每个槽**判断：other 路径不调用 loader，槽传空路径以清旧图；混合组中 selected=other、keeper=photo 时可只保留 keeper 的媒体预览。不能按整组为 photo 就给其中 other 成员请求缩略图，也不能用全局禁预览使测试假通过。
 - 新类别/保留项按钮和动态计数必须 zh/en 完整，独立/内嵌两种模式都可操作；真实按钮和回收线程的参数测试应锁住上述源行/keeper 关系。
 
@@ -136,13 +137,13 @@ class EmbeddedPage(QWidget):
 `(total_bytes, selected_bytes)`，由独立可换行的 `space_summary` 展示。
 
 - 从完整 `table_model.rows` 的扫描快照计算；仅统计 `row.is_checkable()` 且
-  `entry` / `keeper` 都存在的副本，第二项再限定 `checked`。不得只统计可见分类。
+  `entry` / `keeper` 都存在的副本。总量包含所有分类，第二项限定当前可见分类且 `checked`，文案必须点明当前类别。
 - 未扫描、取消或失效结果返回 `(0, 0)`。保留、异常、校验不一致及已处理状态均不计；
   回收结束后统计剩余待处理容量，而非历史累计已回收容量。
 - 只读取 `FileEntry.size` 并复用 `_format_size`，禁止为了刷新统计执行 stat、open、哈希
   或重新扫描。预计值不构成回收授权，真实回收仍执行完整安全复核。
-- 勾选/批量选择、重选 keeper、导入、回收更新、失效、重置、语言切换都须刷新；
-  `_refresh_summary()` 的早返回不能保留旧容量。
+- 勾选/批量选择、分类切换、重选 keeper、导入、回收更新、失效、重置、语言切换都须刷新；
+  `_refresh_summary()` 的早返回不能保留旧容量。导入须先重建分类再刷新容量，避免把当前分类勾选数显示成零。
 - zh/en 提示明确是文件逻辑大小估算，移入回收站后仍须清空才能释放空间；
   不将此值描述成实际物理磁盘释放量（云占位、压缩或链接等会有差异）。
 - 回归须验证隐藏分类勾选、角色/状态排除、keeper 重选、记录导入和真实异步回收后归零；

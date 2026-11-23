@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import file_context_menu as fcm
+from dedupe_table_scroll import configure_result_table_scrolling
 from duplicate_scan_core import (
     FileEntry,
     ScanCancelled,
@@ -1146,6 +1147,7 @@ class MainWindow(FramelessMainWindow):
         self.table.setFrameShape(QFrame.Shape.NoFrame)
         self.table.setIconSize(QSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE))
         self.table.verticalHeader().setDefaultSectionSize(ROW_HEIGHT)
+        configure_result_table_scrolling(self.table)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(COL_CHECK, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(COL_THUMB_B, QHeaderView.ResizeMode.Fixed)
